@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from strategy import add_atr, session_mask, asia_day_ids, ny_levels, find_trades, summarize
+from strategy import add_atr, session_mask, asia_day_ids, ny_levels, find_trades, summarize, atr_values
 
 
 def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
@@ -25,14 +25,14 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour):
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None):
     index = df.index
     high = df["High"].values
     low = df["Low"].values
     asia_mask, asia_day_id = asia_day_ids(index, asia)
     levels = ny_levels(index, high, low, ny_late)
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
-                         entry_buffer, entry_mode, tp_mode, exit_hour)
+                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr)
     return summarize(trades), trades
 
 

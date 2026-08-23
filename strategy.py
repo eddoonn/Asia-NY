@@ -4,11 +4,15 @@ import pandas as pd
 TICKS_PER_DAY = {"s": 86_400, "ms": 86_400_000, "us": 86_400_000_000, "ns": 86_400_000_000_000}
 
 
-def add_atr(df: pd.DataFrame, n: int = 14) -> pd.DataFrame:
+def atr_values(df: pd.DataFrame, n: int = 14) -> np.ndarray:
     h, l, c = df["High"], df["Low"], df["Close"]
     prev_c = c.shift(1)
     tr = pd.concat([h - l, (h - prev_c).abs(), (l - prev_c).abs()], axis=1).max(axis=1)
-    df["atr"] = tr.rolling(n, min_periods=1).mean()
+    return tr.rolling(n, min_periods=1).mean().values
+
+
+def add_atr(df: pd.DataFrame, n: int = 14) -> pd.DataFrame:
+    df["atr"] = atr_values(df, n)
     return df
 
 
@@ -45,12 +49,13 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
     c = df["Close"].values
-    atr = df["atr"].values
+    if atr is None:
+        atr = df["atr"].values
     index = df.index
     hours = np.asarray(index.hour)
     n = len(o)

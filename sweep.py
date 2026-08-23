@@ -1,72 +1,98 @@
 import argparse
 import itertools
 
+import numpy as np
 import pandas as pd
 
 from backtest import load_data, run_config
-from strategy import add_atr
+from strategy import atr_values
+
+
+def segment_r(trades, n_segments):
+    if not trades:
+        return []
+    times = np.array([t["entry_time"].value for t in trades])
+    rs = np.array([t["r"] for t in trades])
+    order = np.argsort(times)
+    times, rs = times[order], rs[order]
+    edges = np.quantile(times, np.linspace(0, 1, n_segments + 1))
+    out = []
+    for i in range(n_segments):
+        lo, hi = edges[i], edges[i + 1]
+        if i == n_segments - 1:
+            hi += 1
+        mask = (times >= lo) & (times < hi)
+        out.append(float(rs[mask].sum()))
+    return out
 
 
 def main():
-    p = argparse.ArgumentParser(description="Parameter sweep for Asia-session gold reversal")
+    p = argparse.ArgumentParser(description="Walk-forward parameter sweep for Asia-session gold reversal")
     p.add_argument("--symbol", default="GC=F")
-    p.add_argument("--period", default="180d")
+    p.add_argument("--period", default="365d")
     p.add_argument("--interval", default="60m")
-    p.add_argument("--min-trades", type=int, default=40)
+    p.add_argument("--min-trades", type=int, default=60)
+    p.add_argument("--segments", type=int, default=3)
     p.add_argument("--top", type=int, default=15)
     args = p.parse_args()
 
     df = load_data(args.symbol, args.period, args.interval)
-    df = add_atr(df, 14)
+    atrs = {n: atr_values(df, n) for n in (10, 14, 20)}
 
-    asia_windows = [(0, 9), (0, 8), (22, 9), (23, 9)]
-    ny_windows = [(18, 22), (19, 22), (20, 22), (19, 21)]
-    entry_modes = ["stop", "close"]
-    buffers = [0.0, 0.25, 0.5]
-    atr_mults = [0.5, 1.0, 1.5, 2.0]
-    exit_hours = [9, 12]
-    tp_options = [("rr", 0.5), ("rr", 1.0), ("rr", 2.0), ("opposite", None)]
+    asia_windows = [(22, 9), (22, 10), (21, 9), (0, 9)]
+    ny_windows = [(19, 22), (20, 22), (19, 21)]
+    buffers = [0.25, 0.5, 0.75, 1.0]
+    atr_mults = [1.0, 1.5, 2.0]
+    exit_hours = [8, 9, 12]
+    tp_options = [0.4, 0.5, 0.75, 1.0, "opposite"]
 
     rows = []
-    combos = list(itertools.product(asia_windows, ny_windows, entry_modes, buffers,
-                                    atr_mults, exit_hours, tp_options))
-    print(f"Testing {len(combos)} configurations on {len(df)} bars...")
-    for asia, ny_late, entry_mode, buf, atr_mult, exit_hour, (tp_mode, rr) in combos:
-        stats, _ = run_config(df, asia, ny_late, rr, atr_mult, buf, entry_mode, tp_mode, exit_hour)
-        if stats.get("trades", 0) == 0:
+    combos = list(itertools.product(asia_windows, ny_windows, buffers, atr_mults,
+                                    exit_hours, tp_options, atrs.keys()))
+    print(f"Testing {len(combos)} configurations on {len(df)} bars "
+          f"({args.segments}-segment walk-forward filter)...")
+
+    for i, (asia, ny_late, buf, atr_mult, exit_hour, tp, atr_len) in enumerate(combos):
+        tp_mode = "opposite" if tp == "opposite" else "rr"
+        rr = None if tp == "opposite" else tp
+        stats, trades = run_config(df, asia, ny_late, rr, atr_mult, buf, "stop",
+                                   tp_mode, exit_hour, atr=atrs[atr_len])
+        if stats.get("trades", 0) < args.min_trades:
             continue
+        segs = segment_r(trades, args.segments)
         rows.append({
             "asia": f"{asia[0]:02d}-{asia[1]:02d}",
             "ny_late": f"{ny_late[0]:02d}-{ny_late[1]:02d}",
-            "entry": entry_mode,
             "buf": buf,
             "atr_mult": atr_mult,
+            "atr_len": atr_len,
             "exit_hour": exit_hour,
-            "tp": tp_mode if tp_mode == "opposite" else f"{rr}R",
+            "tp": tp if tp == "opposite" else f"{tp}R",
+            "seg_r": " / ".join(f"{s:+.1f}" for s in segs),
+            "min_seg_r": round(min(segs), 2),
             **stats,
         })
+        if (i + 1) % 500 == 0:
+            print(f"  {i + 1}/{len(combos)} done, {len(rows)} qualifying")
+
+    if not rows:
+        print("No configuration met the filters.")
+        return
 
     res = pd.DataFrame(rows)
-    res = res[res["trades"] >= args.min_trades]
-    res = res.sort_values("total_r", ascending=False)
+    robust = res[res["min_seg_r"] > 0].sort_values("total_r", ascending=False)
 
-    pd.set_option("display.width", 200)
-    print(f"\n=== Top {args.top} by total R (min {args.min_trades} trades, {args.symbol} {args.period}) ===")
-    print(res.head(args.top).to_string(index=False))
+    pd.set_option("display.width", 250)
+    print(f"\n=== Top {args.top} robust configs (profitable in ALL {args.segments} segments, "
+          f"min {args.min_trades} trades, {args.symbol} {args.period}) ===")
+    print(robust.head(args.top).to_string(index=False))
 
-    by_pf = res.sort_values(["profit_factor", "total_r"], ascending=False)
-    print(f"\n=== Top {args.top} by profit factor ===")
-    print(by_pf.head(args.top).to_string(index=False))
+    print(f"\n=== Top {args.top} by total R (no consistency filter) ===")
+    print(res.sort_values("total_r", ascending=False).head(args.top).to_string(index=False))
 
-    res.to_csv("results/sweep.csv", index=False)
-    print(f"\nAll {len(res)} qualifying configs saved to results/sweep.csv")
-
-    base = res[(res["asia"] == "00-09") & (res["ny_late"] == "18-22") &
-               (res["entry"] == "stop") & (res["buf"] == 0.0) &
-               (res["atr_mult"] == 1.0) & (res["exit_hour"] == 9) & (res["tp"] == "2.0R")]
-    if len(base):
-        print("\nBaseline config for reference:")
-        print(base.to_string(index=False))
+    res.to_csv("results/sweep_robust.csv", index=False)
+    print(f"\n{len(res)} qualifying configs saved to results/sweep_robust.csv "
+          f"({len(robust)} passed the all-segments filter)")
 
 
 if __name__ == "__main__":
