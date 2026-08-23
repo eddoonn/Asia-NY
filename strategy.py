@@ -117,11 +117,16 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
 
         side, epos, entry_px, sl, tp, risk = entry
         result_r = exit_px = exit_pos = reason = None
+        mae = mfe = 0.0
         for pos in range(epos, n):
             if side == "short":
+                mae = max(mae, h[pos] - entry_px)
+                mfe = max(mfe, entry_px - l[pos])
                 hit_sl = h[pos] >= sl
                 hit_tp = l[pos] <= tp
             else:
+                mae = max(mae, entry_px - l[pos])
+                mfe = max(mfe, h[pos] - entry_px)
                 hit_sl = l[pos] <= sl
                 hit_tp = h[pos] >= tp
             if hit_sl:
@@ -147,6 +152,7 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
             "sl": sl, "tp": tp,
             "exit_time": index[exit_pos], "exit": exit_px,
             "r": round(result_r, 3), "reason": reason,
+            "mae_r": round(mae / risk, 2), "mfe_r": round(mfe / risk, 2),
         })
     return trades
 
