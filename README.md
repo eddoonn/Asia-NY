@@ -64,6 +64,42 @@ Note: Yahoo hourly data only reaches back ~730 days, so examples from the video 
 - `results/trades.csv` – every trade with entry/exit, side, reason (sl/tp/time), R multiple
 - `results/equity_curve.png` – cumulative R curve
 
+## IG auto-trading
+
+Fully hands-off overnight execution via IG's REST API. Orders rest **server-side** — no bot needs to be awake:
+
+- `place_orders.py` (~23:05 London): computes the two sweep triggers, places SELL STOP + BUY STOP as working orders with attached SL (1×ATR10) and TP (0.75R), sizes them to risk 1% of account
+- `end_session.py` (~09:05 London): cancels unfilled orders and market-closes any position still open (the backtest's time exit)
+- Both post confirmations to the Discord webhook
+
+Setup:
+
+```bash
+copy .env.example .env      # then fill IG_API_KEY / IG_USERNAME / IG_PASSWORD
+python place_orders.py --dry-run
+python place_orders.py      # demo account first!
+```
+
+Find your gold epic with a quick search (spread-bet and CFD epics differ):
+
+```python
+from config import load_env; load_env()
+from ig_client import IGClient
+ig = IGClient(); ig.login()
+for m in ig.search("GOLD")["markets"]: print(m["epic"], m["instrumentName"])
+```
+
+Sizing: `size = risk£ / stop_distance` (£ per point) — correct for **spread betting**. For CFDs the same formula gives USD-per-point; set `IG_CURRENCY=USD` and check the instrument's contract size/min deal size.
+
+Schedule (Task Scheduler, local time — 23:05 BST / 22:05 GMT place, 09:05 London end):
+
+```powershell
+schtasks /Create /SC DAILY /ST 23:05 /TR "python \"C:\...\asia-gold-reversal\place_orders.py\"" /F
+schtasks /Create /SC DAILY /ST 09:05 /TR "python \"C:\...\asia-gold-reversal\end_session.py\"" /F
+```
+
+**Run the demo account for at least 4 weeks.** Verify: sweep fills match the backtest's stop-order fill assumption, spread at 23:00–02:00 is near the modeled 0.3, and TP fills aren't slipping. CFDs/spread bets are leveraged — most retail accounts lose money.
+
 ## Discord daily signal
 
 `notify.py` posts the current session state to a Discord channel via webhook:
