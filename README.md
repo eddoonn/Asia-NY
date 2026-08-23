@@ -64,6 +64,28 @@ Note: Yahoo hourly data only reaches back ~730 days, so examples from the video 
 - `results/trades.csv` – every trade with entry/exit, side, reason (sl/tp/time), R multiple
 - `results/equity_curve.png` – cumulative R curve
 
+## Discord daily signal
+
+`notify.py` posts the current session state to a Discord channel via webhook:
+
+- **Armed** (gray): NY-late high/low + exact sweep trigger prices for the session
+- **Triggered/Open** (blue): sweep happened — entry/stop/target
+- **Closed** (green/red): result in R
+
+```bash
+echo DISCORD_WEBHOOK=... > .env   # webhook URL, gitignored
+python notify.py --test           # verify delivery
+python notify.py                  # post current session state
+```
+
+Schedule it with Task Scheduler (run at/after 22:10 UTC for the armed message, and optionally again ~08:10 UTC for the result):
+
+```powershell
+schtasks /Create /SC DAILY /ST 18:10 /TR "python \"C:\Users\Test Edon\Desktop\MatchForecast codes\asia-gold-reversal\notify.py\"" /F
+```
+
+(`/ST` is local time — 18:10 EDT = 22:10 UTC; adjust for your timezone. Re-running later in the session updates the message to Triggered/Closed.)
+
 ## Tuning ideas
 
 - `--asia-start/--asia-end` to match your broker's Asia hours (e.g., Tokyo 9am JST = 00:00 UTC)
