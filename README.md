@@ -47,9 +47,15 @@ python backtest.py --asia 22-10 --ny-late 19-21 --entry-buffer 1.0 --atr-mult 1.
 | Stop | 1.0×ATR14 | **1.0×ATR10** | faster ATR adapts to the post-close volatility shift |
 | Baseline result | −39.8R, 27.8% WR | +74.5R, 72.4% WR | |
 
-Methodology: 6,480-config grid on 365d of hourly data; 2,137 configs profitable in *all three* 4-month segments; ranked by total R among those. The winner's edge is stable across thirds, and long/short counts are balanced (134/138).
+Methodology: 6,480-config grid; 3-segment consistency filter; then **true out-of-sample test** — sweep on first 70% of data (Jun 2025–Apr 2026), validate top 20 configs on untouched last 30% (Apr–Aug 2026), with 0.3 price-unit round-trip cost modeled.
 
-Caveats: still in-sample selection (robustness filter reduces but doesn't eliminate overfitting); fills are idealized (no spread/slippage/commission — with gold spread ~0.3–0.5 and 0.75R targets, costs matter); hourly bars hide intrabar sweep-then-reverse sequences.
+Out-of-sample results (with costs): **20/20 configs profitable on the test set, median +16.5R in ~4 months.** Best: +17.9R, 68.7% WR, PF 1.75 over 83 test trades. The parameter neighborhood is flat (many near-identical configs cluster at the top), which indicates a real effect rather than a knife-edge fit.
+
+Costs: `--cost 0.3` models ~3 ticks round trip (spread + slippage + fees). The strategy's edge survives: 365d net drops only from +74.5R to +68.5R (PF 1.95) because the small 0.75R targets are hit often while costs are fixed per trade.
+
+Other engine features: `--account/--risk-pct` dollar sizing report, monthly R breakdown, win/loss streaks, avg win/loss.
+
+Caveats: still single instrument (COMEX gold futures); hourly bars hide intrabar sweep-then-reverse sequences; Yahoo data quality during rolls/holidays is imperfect.
 
 Note: Yahoo hourly data only reaches back ~730 days, so examples from the video (e.g., Tue Jun 14, 2022) can't be replayed with this data source.
 

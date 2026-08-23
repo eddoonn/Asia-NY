@@ -49,7 +49,7 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -125,20 +125,21 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
                 hit_sl = l[pos] <= sl
                 hit_tp = h[pos] >= tp
             if hit_sl:
-                result_r, exit_px, exit_pos, reason = -1.0, sl, pos, "sl"
+                gross = -risk
+                result_r, exit_px, exit_pos, reason = (gross - cost) / risk, sl, pos, "sl"
                 break
             if hit_tp:
-                pnl = (entry_px - tp) if side == "short" else (tp - entry_px)
-                result_r, exit_px, exit_pos, reason = pnl / risk, tp, pos, "tp"
+                gross = (entry_px - tp) if side == "short" else (tp - entry_px)
+                result_r, exit_px, exit_pos, reason = (gross - cost) / risk, tp, pos, "tp"
                 break
             if hours[pos] == exit_hour and pos > epos:
-                pnl = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
-                result_r, exit_px, exit_pos, reason = pnl / risk, float(c[pos]), pos, "time"
+                gross = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
+                result_r, exit_px, exit_pos, reason = (gross - cost) / risk, float(c[pos]), pos, "time"
                 break
         if result_r is None:
             pos = n - 1
-            pnl = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
-            result_r, exit_px, exit_pos, reason = pnl / risk, float(c[pos]), pos, "eod"
+            gross = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
+            result_r, exit_px, exit_pos, reason = (gross - cost) / risk, float(c[pos]), pos, "eod"
 
         trades.append({
             "date": index[seg[0]].date(), "side": side,
@@ -160,6 +161,17 @@ def summarize(trades: list) -> dict:
     gross_loss = abs(losses.sum()) if len(losses) else 0.0
     equity = np.cumsum(r)
     dd = (np.maximum.accumulate(equity) - equity).max() if len(equity) else 0.0
+
+    streak = 0
+    max_w = max_l = 0
+    for x in r:
+        if x > 0:
+            streak = streak + 1 if streak > 0 else 1
+        else:
+            streak = streak - 1 if streak < 0 else -1
+        max_w = max(max_w, streak)
+        max_l = min(max_l, streak)
+
     return {
         "trades": len(r),
         "win_rate_pct": round(100 * len(wins) / len(r), 2),
@@ -167,6 +179,10 @@ def summarize(trades: list) -> dict:
         "total_r": round(float(r.sum()), 2),
         "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else float("inf"),
         "max_drawdown_r": round(float(dd), 2),
+        "avg_win_r": round(float(wins.mean()), 3) if len(wins) else 0.0,
+        "avg_loss_r": round(float(losses.mean()), 3) if len(losses) else 0.0,
+        "max_win_streak": max_w,
+        "max_loss_streak": abs(max_l),
         "longs": sum(1 for t in trades if t["side"] == "long"),
         "shorts": sum(1 for t in trades if t["side"] == "short"),
     }

@@ -25,14 +25,14 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None):
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0):
     index = df.index
     high = df["High"].values
     low = df["Low"].values
     asia_mask, asia_day_id = asia_day_ids(index, asia)
     levels = ny_levels(index, high, low, ny_late)
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
-                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr)
+                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost)
     return summarize(trades), trades
 
 
@@ -50,6 +50,10 @@ def main():
     p.add_argument("--entry-buffer", type=float, default=0.0)
     p.add_argument("--tp-mode", choices=["rr", "opposite"], default="rr")
     p.add_argument("--exit-hour", type=int, default=9)
+    p.add_argument("--cost", type=float, default=0.0,
+                   help="round-trip spread+slippage+fees in price units (e.g. 0.3 for GC)")
+    p.add_argument("--account", type=float, default=10000.0)
+    p.add_argument("--risk-pct", type=float, default=1.0)
     args = p.parse_args()
 
     asia = tuple(int(x) for x in args.asia.split("-"))
@@ -59,13 +63,27 @@ def main():
     df = add_atr(df, args.atr_len)
 
     stats, trades = run_config(df, asia, ny_late, args.rr, args.atr_mult,
-                               args.entry_buffer, args.entry_mode, args.tp_mode, args.exit_hour)
+                               args.entry_buffer, args.entry_mode, args.tp_mode, args.exit_hour,
+                               cost=args.cost)
 
     print(f"\nSymbol={args.symbol} period={args.period} interval={args.interval}")
     print(f"Asia={asia} NY-late={ny_late} entry={args.entry_mode} buf={args.entry_buffer} "
-          f"TP={args.tp_mode} RR={args.rr} SL={args.atr_mult}*ATR{args.atr_len} exitH={args.exit_hour}")
+          f"TP={args.tp_mode} RR={args.rr} SL={args.atr_mult}*ATR{args.atr_len} exitH={args.exit_hour} "
+          f"cost={args.cost}")
     for k, v in stats.items():
         print(f"{k}: {v}")
+
+    if trades:
+        risk_dollars = args.account * args.risk_pct / 100.0
+        total_dollars = stats["total_r"] * risk_dollars
+        print(f"\nSizing: risk {args.risk_pct}% of {args.account:.0f} = {risk_dollars:.2f} per trade")
+        print(f"Net PnL: {total_dollars:+.2f} USD -> equity {args.account + total_dollars:.2f}")
+
+        tdf = pd.DataFrame(trades)
+        monthly = tdf.groupby(tdf["entry_time"].dt.strftime("%Y-%m"))["r"].agg(["count", "sum"])
+        monthly["sum"] = monthly["sum"].round(2)
+        print("\nMonthly R:")
+        print(monthly.to_string())
 
     os.makedirs("results", exist_ok=True)
     if trades:
