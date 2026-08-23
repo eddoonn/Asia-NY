@@ -18,11 +18,33 @@ One trade per day maximum; first level touched wins. Ambiguous candles touching 
 
 ```bash
 pip install -r requirements.txt
-python backtest.py                       # gold futures GC=F, last 60 days of 1h bars
-python backtest.py --symbol XAUUSD=X --rr 1.5 --atr-mult 1.5
+python backtest.py                       # baseline (video-literal) config
+python sweep.py                          # grid search over sessions/entries/targets
 ```
 
-Note: Yahoo hourly data is limited (~730 days max). `XAUUSD=X` is spot-ish FX quoting; `GC=F` is COMEX futures. Neither includes broker spread/slippage — results are idealized fills.
+Tuned config (best from sweep, GC=F 180d hourly):
+
+```bash
+python backtest.py --asia 22-9 --ny-late 19-22 --entry-mode stop --entry-buffer 0.5 \
+  --atr-mult 1.5 --rr 0.5 --exit-hour 9 --period 180d
+```
+
+Result: 145 trades, 73.8% win rate, PF 1.75, +22.7R, max DD 3.9R. Stable across both 90d halves (73.6% / 74.0% WR).
+
+## What the sweep found
+
+| Parameter | Baseline (video-literal) | Tuned | Why |
+|---|---|---|---|
+| Asia window | 00:00–09:00 UTC | **22:00–09:00 UTC** | sweep starts right at 18:00 ET futures open, not midnight UTC |
+| NY-late window | 18:00–22:00 | **19:00–22:00 UTC** | final 3h before futures close hold the real liquidity |
+| Entry | touch of level | **level + 0.5×ATR sweep** | a mere poke isn't a grab; require penetration |
+| Target | 2R | **0.5R** | the reversal is a quick snap-back, not a trend ride |
+| Stop | 1.0×ATR | **1.5×ATR** | wider stop survives the post-sweep chop |
+| Baseline result | −39.8R, 27.8% WR | +22.7R, 73.8% WR | |
+
+Caveats: 3,072-config grid search on one instrument/period = overfitting risk; fills are idealized (no spread/slippage/commission); hourly bars hide intrabar sweep-then-reverse sequences, which cuts the real win rate of the "90% version" but also skips some losers.
+
+Note: Yahoo hourly data only reaches back ~730 days, so examples from the video (e.g., Tue Jun 14, 2022) can't be replayed with this data source.
 
 ## Outputs
 

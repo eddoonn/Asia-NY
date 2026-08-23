@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from strategy import add_atr, label_sessions, ny_reference_levels, find_trades, summarize
+from strategy import add_atr, session_mask, asia_day_ids, ny_levels, find_trades, summarize
 
 
 def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
@@ -25,6 +25,17 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour):
+    index = df.index
+    high = df["High"].values
+    low = df["Low"].values
+    asia_mask, asia_day_id = asia_day_ids(index, asia)
+    levels = ny_levels(index, high, low, ny_late)
+    trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
+                         entry_buffer, entry_mode, tp_mode, exit_hour)
+    return summarize(trades), trades
+
+
 def main():
     p = argparse.ArgumentParser(description="Asia-session gold liquidity-grab reversal backtest")
     p.add_argument("--symbol", default="GC=F")
@@ -33,24 +44,26 @@ def main():
     p.add_argument("--rr", type=float, default=2.0)
     p.add_argument("--atr-mult", type=float, default=1.0)
     p.add_argument("--atr-len", type=int, default=14)
-    p.add_argument("--asia-start", type=int, default=0)
-    p.add_argument("--asia-end", type=int, default=9)
-    p.add_argument("--ny-late-start", type=int, default=18)
-    p.add_argument("--ny-late-end", type=int, default=22)
+    p.add_argument("--asia", default="0-9")
+    p.add_argument("--ny-late", default="18-22")
+    p.add_argument("--entry-mode", choices=["stop", "close"], default="stop")
+    p.add_argument("--entry-buffer", type=float, default=0.0)
+    p.add_argument("--tp-mode", choices=["rr", "opposite"], default="rr")
     p.add_argument("--exit-hour", type=int, default=9)
     args = p.parse_args()
 
+    asia = tuple(int(x) for x in args.asia.split("-"))
+    ny_late = tuple(int(x) for x in args.ny_late.split("-"))
+
     df = load_data(args.symbol, args.period, args.interval)
     df = add_atr(df, args.atr_len)
-    asia = (args.asia_start, args.asia_end)
-    ny_late = (args.ny_late_start, args.ny_late_end)
-    df = label_sessions(df, asia, ny_late)
-    levels = ny_reference_levels(df)
-    trades = find_trades(df, levels, args.rr, args.atr_mult, args.exit_hour)
 
-    stats = summarize(trades)
+    stats, trades = run_config(df, asia, ny_late, args.rr, args.atr_mult,
+                               args.entry_buffer, args.entry_mode, args.tp_mode, args.exit_hour)
+
     print(f"\nSymbol={args.symbol} period={args.period} interval={args.interval}")
-    print(f"Asia={asia} NY-late={ny_late} RR={args.rr} SL={args.atr_mult}*ATR{args.atr_len}")
+    print(f"Asia={asia} NY-late={ny_late} entry={args.entry_mode} buf={args.entry_buffer} "
+          f"TP={args.tp_mode} RR={args.rr} SL={args.atr_mult}*ATR{args.atr_len} exitH={args.exit_hour}")
     for k, v in stats.items():
         print(f"{k}: {v}")
 

@@ -1,5 +1,7 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+TICKS_PER_DAY = {"s": 86_400, "ms": 86_400_000, "us": 86_400_000_000, "ns": 86_400_000_000_000}
 
 
 def add_atr(df: pd.DataFrame, n: int = 14) -> pd.DataFrame:
@@ -10,104 +12,136 @@ def add_atr(df: pd.DataFrame, n: int = 14) -> pd.DataFrame:
     return df
 
 
-def label_sessions(df: pd.DataFrame, asia=(0, 9), ny_late=(18, 22)) -> pd.DataFrame:
-    hour = df.index.hour
-    df["session"] = "other"
-    df.loc[(hour >= asia[0]) & (hour < asia[1]), "session"] = "asia"
-    df.loc[(hour >= ny_late[0]) & (hour < ny_late[1]), "session"] = "ny_late"
-    return df
+def session_mask(index: pd.DatetimeIndex, window) -> np.ndarray:
+    hours = index.hour
+    s, e = window
+    if s <= e:
+        return np.asarray((hours >= s) & (hours < e))
+    return np.asarray((hours >= s) | (hours < e))
 
 
-def ny_reference_levels(df: pd.DataFrame) -> dict:
+def day_ids(index: pd.DatetimeIndex) -> np.ndarray:
+    unit = getattr(index, "unit", "ns")
+    return index.asi8 // TICKS_PER_DAY.get(unit, TICKS_PER_DAY["ns"])
+
+
+def asia_day_ids(index: pd.DatetimeIndex, window):
+    mask = session_mask(index, window)
+    ids = day_ids(index)
+    s, _ = window
+    if s > window[1]:
+        ids = np.where(index.hour >= s, ids + 1, ids)
+    return mask, np.where(mask, ids, -1)
+
+
+def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window) -> dict:
+    mask = session_mask(index, window)
+    ids = day_ids(index)
     levels = {}
-    dates = sorted(df.index.date)
-    for d in dates:
-        day = df[df.index.date == d]
-        late = day[day["session"] == "ny_late"]
-        if len(late):
-            levels[d] = {"high": float(late["High"].max()), "low": float(late["Low"].min())}
+    for did in np.unique(ids[mask]):
+        sel = mask & (ids == did)
+        pos = np.where(sel)[0]
+        levels[int(did)] = (float(high[pos].max()), float(low[pos].min()), int(pos[-1]))
     return levels
 
 
-def find_trades(df: pd.DataFrame, levels: dict, rr: float, atr_mult: float, exit_hour: int) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour) -> list:
+    o = df["Open"].values
+    h = df["High"].values
+    l = df["Low"].values
+    c = df["Close"].values
+    atr = df["atr"].values
+    index = df.index
+    hours = np.asarray(index.hour)
+    n = len(o)
+
     trades = []
-    dates = sorted(set(df.index.date))
-    for d in dates:
-        prev_dates = [x for x in dates if x < d]
-        if not prev_dates:
+    asia_pos = np.where(asia_mask)[0]
+    if len(asia_pos) == 0:
+        return trades
+    seg_ids = asia_day_id[asia_pos]
+    unique_days = np.unique(seg_ids)
+    starts = np.searchsorted(seg_ids, unique_days, side="left")
+    ends = np.searchsorted(seg_ids, unique_days, side="right")
+
+    for k, did in enumerate(unique_days):
+        seg = asia_pos[starts[k]:ends[k]]
+        if len(seg) < 2:
             continue
+        first_pos = seg[0]
         ref = None
-        for pd_ in reversed(prev_dates[-5:]):
-            if pd_ in levels:
-                ref = levels[pd_]
+        for p in range(int(did) - 1, int(did) - 8, -1):
+            lv = levels.get(p)
+            if lv and lv[2] < first_pos:
+                ref = lv
                 break
         if ref is None:
             continue
-        asia = df[(df.index.date == d) & (df["session"] == "asia")]
-        if len(asia) < 2:
-            continue
 
         entry = None
-        for ts, row in asia.iterrows():
-            crossed_high = row["High"] >= ref["high"]
-            crossed_low = row["Low"] <= ref["low"]
-            if crossed_high and crossed_low:
+        for pos in seg:
+            a = atr[pos]
+            if not np.isfinite(a) or a <= 0:
                 continue
-            atr_here = df.loc[:ts, "atr"].iloc[-1]
-            if np.isnan(atr_here) or atr_here <= 0:
+            buf = entry_buffer * a
+            rh, rl = ref[0], ref[1]
+            short_trig = h[pos] >= rh + buf
+            long_trig = l[pos] <= rl - buf
+            if short_trig and long_trig:
                 continue
-            if crossed_high:
-                entry = {
-                    "date": d, "side": "short", "entry_time": ts, "entry": ref["high"],
-                    "sl": ref["high"] + atr_mult * atr_here,
-                    "tp": ref["high"] - rr * atr_mult * atr_here,
-                    "risk": atr_mult * atr_here,
-                }
-                break
-            if crossed_low:
-                entry = {
-                    "date": d, "side": "long", "entry_time": ts, "entry": ref["low"],
-                    "sl": ref["low"] - atr_mult * atr_here,
-                    "tp": ref["low"] + rr * atr_mult * atr_here,
-                    "risk": atr_mult * atr_here,
-                }
-                break
+            if not (short_trig or long_trig):
+                continue
+            side = "short" if short_trig else "long"
+            level = rh + buf if side == "short" else rl - buf
+            risk = atr_mult * a
+            if side == "short":
+                sl = level + risk
+                tp = rl if tp_mode == "opposite" else level - rr * risk
+            else:
+                sl = level - risk
+                tp = rh if tp_mode == "opposite" else level + rr * risk
+            if entry_mode == "stop":
+                entry = (side, pos, float(level), float(sl), float(tp), float(risk))
+            else:
+                if pos + 1 >= n:
+                    continue
+                entry = (side, pos + 1, float(o[pos + 1]), float(sl), float(tp), float(risk))
+            break
         if entry is None:
             continue
 
-        forward = df[(df.index > entry["entry_time"]) & (df.index.hour < exit_hour)]
-        result_r = None
-        exit_price = None
-        exit_time = None
-        reason = None
-        for ts, row in forward.iterrows():
-            if entry["side"] == "short":
-                hit_sl = row["High"] >= entry["sl"]
-                hit_tp = row["Low"] <= entry["tp"]
+        side, epos, entry_px, sl, tp, risk = entry
+        result_r = exit_px = exit_pos = reason = None
+        for pos in range(epos, n):
+            if side == "short":
+                hit_sl = h[pos] >= sl
+                hit_tp = l[pos] <= tp
             else:
-                hit_sl = row["Low"] <= entry["sl"]
-                hit_tp = row["High"] >= entry["tp"]
+                hit_sl = l[pos] <= sl
+                hit_tp = h[pos] >= tp
             if hit_sl:
-                result_r = -1.0
-                exit_price = entry["sl"]
-                exit_time = ts
-                reason = "sl"
+                result_r, exit_px, exit_pos, reason = -1.0, sl, pos, "sl"
                 break
             if hit_tp:
-                result_r = rr
-                exit_price = entry["tp"]
-                exit_time = ts
-                reason = "tp"
+                pnl = (entry_px - tp) if side == "short" else (tp - entry_px)
+                result_r, exit_px, exit_pos, reason = pnl / risk, tp, pos, "tp"
+                break
+            if hours[pos] == exit_hour and pos > epos:
+                pnl = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
+                result_r, exit_px, exit_pos, reason = pnl / risk, float(c[pos]), pos, "time"
                 break
         if result_r is None:
-            last = forward.iloc[-1] if len(forward) else asia.iloc[-1]
-            exit_time = forward.index[-1] if len(forward) else asia.index[-1]
-            exit_price = float(last["Close"])
-            pnl = (entry["entry"] - exit_price) if entry["side"] == "short" else (exit_price - entry["entry"])
-            result_r = pnl / entry["risk"]
-            reason = "time"
+            pos = n - 1
+            pnl = (entry_px - c[pos]) if side == "short" else (c[pos] - entry_px)
+            result_r, exit_px, exit_pos, reason = pnl / risk, float(c[pos]), pos, "eod"
 
-        trades.append({**entry, "exit_time": exit_time, "exit": exit_price, "r": round(result_r, 3), "reason": reason})
+        trades.append({
+            "date": index[seg[0]].date(), "side": side,
+            "entry_time": index[epos], "entry": entry_px,
+            "sl": sl, "tp": tp,
+            "exit_time": index[exit_pos], "exit": exit_px,
+            "r": round(result_r, 3), "reason": reason,
+        })
     return trades
 
 
