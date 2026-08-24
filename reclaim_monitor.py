@@ -9,22 +9,33 @@ from config import load_env
 from notify import load_webhook, send
 from strategy import add_atr, day_ids, ny_levels
 
-PAIRS = [
-    ("USDJPY", "USDJPY=X"),
-    ("EURJPY", "EURJPY=X"),
-    ("GBPJPY", "GBPJPY=X"),
-    ("AUDJPY", "AUDJPY=X"),
+PROFILES = [
+    {"name": "tokyo", "trigger": (22, 10), "reference": (19, 21), "exit_hour": 8,
+     "pairs": [("USDJPY", "USDJPY=X"), ("EURJPY", "EURJPY=X"),
+               ("GBPJPY", "GBPJPY=X"), ("AUDJPY", "AUDJPY=X")]},
+    {"name": "london", "trigger": (7, 13), "reference": (22, 10), "exit_hour": 17,
+     "pairs": [("EURUSD", "EURUSD=X"), ("GBPUSD", "GBPUSD=X"),
+               ("USDJPY", "USDJPY=X"), ("GOLD", "GC=F")]},
 ]
-ASIA = (22, 10)
-NY_LATE = (19, 21)
 ENTRY_BUFFER = 1.0
-WICK_BUFFER = 0.5
+WICK_BUFFER = 0.25
 STATE = "results/reclaim_session.json"
 BLUE, GRAY = 0x3498DB, 0x95A5A6
 
 
-def session_active(now):
-    return now.weekday() < 5 and (now.hour >= ASIA[0] or now.hour < ASIA[1])
+def in_window(now, trigger):
+    h = now.hour
+    s, e = trigger
+    if s <= e:
+        return s <= h < e
+    return h >= s or h < e
+
+
+def session_key(now, trigger):
+    s, _ = trigger
+    if now.hour >= s:
+        return str(now.date())
+    return str((now - pd.Timedelta(days=1)).date())
 
 
 def last_closed_bar(df, now):
@@ -33,22 +44,23 @@ def last_closed_bar(df, now):
     return df.iloc[-1], df.index[-1]
 
 
-def check_pair(client, name, sym, risk, now, state, session_key, dry):
-    if any(o["symbol"] == name and o["session"] == session_key for o in state["orders"]):
+def check_signal(client, profile, name, sym, risk, now, state, dry):
+    skey = f"{profile['name']}:{session_key(now, profile['trigger'])}"
+    if any(o.get("skey") == skey and o["symbol"] == name for o in state["orders"]):
         return None
     df = load_data(sym, "10d", "60m")
     add_atr(df, 10)
     idx = df.index
     bar, bar_ts = last_closed_bar(df, now)
-    if bar_ts.date() != now.date() and not (now.hour < ASIA[1] and (idx[-1].date() - pd.Timedelta(days=1)).month):
-        pass
+    if not in_window(bar_ts.to_pydatetime().replace(tzinfo=timezone.utc), profile["trigger"]):
+        return None
 
-    levels = ny_levels(idx, df["High"].values, df["Low"].values, NY_LATE,
+    levels = ny_levels(idx, df["High"].values, df["Low"].values, profile["reference"],
                        opens=df["Open"].values, closes=df["Close"].values)
     cur_id = int(day_ids(idx)[-1])
     ref = None
-    for p in range(cur_id - 1, cur_id - 8, -1):
-        if p in levels and levels[p][2] < len(idx) - 1:
+    for p in range(cur_id, cur_id - 8, -1):
+        if p in levels and levels[p][2] < int(day_ids(idx).get_indexer([bar_ts])[0]):
             ref = levels[p]
             break
     if ref is None:
@@ -73,60 +85,61 @@ def check_pair(client, name, sym, risk, now, state, session_key, dry):
         return None
 
     risk_dist = abs(sl - bar_c)
-    units = round(risk * bar_c / risk_dist, 2) if "JPY" in name else round(risk / risk_dist, 4)
-    print(f"{name}: {side} signal on {bar_ts} bar — entry ~{bar_c:.3f}, SL {sl:.3f}, TP {tp:.3f}")
+    jpy = "JPY" in name
+    units = round(risk * bar_c / risk_dist, 2) if jpy else round(risk / risk_dist, 4)
+    print(f"[{profile['name']}] {name}: {side} on {bar_ts} — entry ~{bar_c:.4f} SL {sl:.4f} TP {tp:.4f}")
     if dry:
-        return {"symbol": name, "session": session_key, "dry": True, "side": side,
-                "entry": bar_c, "sl": sl, "tp": tp, "risk_amount": risk}
+        return {"symbol": name, "skey": skey, "profile": profile["name"], "dry": True,
+                "side": side, "entry": bar_c, "sl": sl, "tp": tp, "risk_amount": risk}
 
     inst = client.resolve(name)
-    r = client.place_market(inst["instrumentId"], side, units, sl, tp)
-    return {"symbol": name, "session": session_key, "order_id": r.get("orderId"),
-            "reference_id": r.get("referenceId"), "instrument_id": inst["instrumentId"],
-            "risk_amount": risk, "side": side, "entry": bar_c, "sl": sl, "tp": tp}
+    lev = 10 if jpy else (5 if "GOLD" in name.upper() else 10)
+    r = client.place_market(inst["instrumentId"], side, units, sl, tp, leverage=lev)
+    return {"symbol": name, "skey": skey, "profile": profile["name"],
+            "order_id": r.get("orderId"), "reference_id": r.get("referenceId"),
+            "instrument_id": inst["instrumentId"], "risk_amount": risk,
+            "side": side, "entry": bar_c, "sl": sl, "tp": tp}
 
 
 def main():
     import argparse
-    p = argparse.ArgumentParser(description="Hourly Tokyo-reclaim monitor")
+    p = argparse.ArgumentParser(description="Hourly sweep-reclaim monitor (Tokyo + London)")
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--force", action="store_true", help="bypass session-active check (testing)")
+    p.add_argument("--force", action="store_true", help="bypass session-window check (testing)")
     args = p.parse_args()
 
     load_env()
     now = datetime.now(timezone.utc)
-    if not session_active(now) and not args.force:
-        print("Session inactive — nothing to monitor")
-        return
-    session_key = str(now.date()) if now.hour >= ASIA[0] else str((now - pd.Timedelta(days=1)).date())
-
     state = {"orders": []}
     if os.path.exists(STATE):
         state = json.load(open(STATE))
 
     account = float(os.environ.get("ACCOUNT_SIZE", "10000"))
-    risk = account * float(os.environ.get("RISK_PCT", "1.0")) / 100.0 / len(PAIRS)
+    risk = account * float(os.environ.get("RISK_PCT", "1.0")) / 100.0 / 4.0
 
     client = None
-    placed, signals = [], []
-    for name, sym in PAIRS:
-        try:
-            dry = args.dry_run
-            if not dry and client is None:
-                from etoro_client import EtoroClient
-                client = EtoroClient(mode=os.environ.get("ETORO_MODE", "demo"))
-            r = check_pair(client, name, sym, risk, now, state, session_key, dry)
-            if r:
-                signals.append(r)
-                if not dry:
-                    state["orders"].append(r)
-                    placed.append(r)
-        except Exception as e:
-            print(f"{name}: ERROR {e}")
+    signals = []
+    for profile in PROFILES:
+        if not args.force and not in_window(now, profile["trigger"]):
+            continue
+        for name, sym in profile["pairs"]:
+            try:
+                dry = args.dry_run
+                if not dry and client is None:
+                    from etoro_client import EtoroClient
+                    client = EtoroClient(mode=os.environ.get("ETORO_MODE", "demo"))
+                r = check_signal(client, profile, name, sym, risk, now, state, dry)
+                if r:
+                    signals.append(r)
+                    if not dry:
+                        state["orders"].append(r)
+            except Exception as e:
+                print(f"[{profile['name']}] {name}: ERROR {e}")
 
     if args.dry_run:
         for s in signals:
-            print(f"DRY: {s['symbol']} {s['side']} entry {s['entry']:.3f} SL {s['sl']:.3f} TP {s['tp']:.3f}")
+            print(f"DRY: [{s['profile']}] {s['symbol']} {s['side']} entry {s['entry']:.4f} "
+                  f"SL {s['sl']:.4f} TP {s['tp']:.4f}")
         if not signals:
             print("No confirmed reclaim signals this hour")
         return
@@ -134,10 +147,10 @@ def main():
     if signals:
         os.makedirs("results", exist_ok=True)
         json.dump(state, open(STATE, "w"), indent=1, default=str)
-        fields = [{"name": f"{o['symbol']} {o['side'].upper()}", "inline": True,
-                   "value": f"entry {o['entry']:.3f}\nSL {o['sl']:.3f} · TP {o['tp']:.3f}"}
-                  for o in placed]
-        send(load_webhook(), {"title": f"Tokyo Reclaim — {len(placed)} trade(s) opened",
+        fields = [{"name": f"[{o['profile']}] {o['symbol']} {o['side'].upper()}", "inline": True,
+                   "value": f"entry {o['entry']:.4f}\nSL {o['sl']:.4f} · TP {o['tp']:.4f}"}
+                  for o in signals if not o.get("dry")]
+        send(load_webhook(), {"title": f"Sweep Reclaim — {len(fields)} trade(s) opened",
                               "color": BLUE, "fields": fields,
                               "footer": {"text": f"sweep + reclaim confirmed on hourly close · risk {risk:.0f}/trade"}})
 

@@ -41,6 +41,8 @@ def asia_day_ids(index: pd.DatetimeIndex, window):
 def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window, opens: np.ndarray = None, closes: np.ndarray = None) -> dict:
     mask = session_mask(index, window)
     ids = day_ids(index)
+    if window[0] > window[1]:
+        ids = np.where(index.hour >= window[0], ids + 1, ids)
     levels = {}
     for did in np.unique(ids[mask]):
         sel = mask & (ids == did)
