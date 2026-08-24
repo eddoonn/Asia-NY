@@ -59,7 +59,8 @@ def run_etoro(dry):
                 reason = "stop hit"
             elif not (tp and abs(exit_rate - tp) < 1.0):
                 reason = "closed at market"
-            results.append({"side": side, "pnl": pnl, "r": pnl / risk_amount,
+            results.append({"side": side, "pnl": pnl, "r": pnl / float(o.get("risk_amount", risk_amount)),
+                            "symbol": o.get("symbol", ""),
                             "open_rate": float(closed_trade.get("openRate", o["trigger"])),
                             "exit_rate": exit_rate, "reason": reason,
                             "open_ts": closed_trade.get("openTimestamp", ""),
@@ -75,7 +76,8 @@ def run_etoro(dry):
             status = (od.get("status") or {}).get("id")
             if status in (1, 2, 11, 12):
                 client.cancel_order(oid)
-                results.append({"side": side, "pnl": 0.0, "r": 0.0, "no_fill": True})
+                results.append({"side": side, "pnl": 0.0, "r": 0.0, "no_fill": True,
+                                "symbol": o.get("symbol", "")})
                 print(f"{side} order {oid}: cancelled (was pending)")
                 handled = True
             elif status in (3, 5):
@@ -97,7 +99,8 @@ def run_etoro(dry):
                                 continue
                         direction = 1 if txn == "buy" else -1
                         pnl = (exit_rate - float(o["trigger"])) * float(o.get("units", 0)) * direction if exit_rate else 0.0
-                        results.append({"side": side, "pnl": pnl, "r": pnl / risk_amount,
+                        results.append({"side": side, "pnl": pnl, "r": pnl / float(o.get("risk_amount", risk_amount)),
+                                        "symbol": o.get("symbol", ""),
                                         "open_rate": float(o["trigger"]),
                                         "exit_rate": exit_rate or 0.0,
                                         "reason": "closed at market"})
@@ -131,9 +134,9 @@ def run_etoro(dry):
                     f"P&L **{t['pnl']:+,.2f} USD** ({t['r']:+.2f}R) · {t.get('reason', '')}")
             if t.get("open_ts") and t.get("close_ts"):
                 line += f"\n{t['open_ts'][11:16]} → {t['close_ts'][11:16]} UTC"
-            fields.append({"name": f"{t['side']} trade", "value": line, "inline": False})
+            fields.append({"name": f"{t.get('symbol', '')} {t['side']}", "value": line, "inline": False})
         for n in no_fills:
-            fields.append({"name": f"{n['side']} order",
+            fields.append({"name": f"{n.get('symbol', '')} {n['side']} order",
                            "value": "Never triggered — cancelled, no loss", "inline": False})
         for e in errors:
             fields.append({"name": "Attention", "value": e["error"], "inline": False})

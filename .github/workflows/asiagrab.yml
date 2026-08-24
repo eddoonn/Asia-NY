@@ -32,6 +32,8 @@ jobs:
           ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
           ETORO_MODE: demo
           ETORO_SYMBOL: GOLD.24-7
+          ETORO_SYMBOLS: GOLD.24-7,EURUSD,GBPUSD,USDJPY
+          RISK_MODE: split
           BROKER: etoro
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ACCOUNT_SIZE: '10000'
@@ -61,6 +63,8 @@ jobs:
           ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
           ETORO_MODE: demo
           ETORO_SYMBOL: GOLD.24-7
+          ETORO_SYMBOLS: GOLD.24-7,EURUSD,GBPUSD,USDJPY
+          RISK_MODE: split
           BROKER: etoro
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python end_session.py --broker etoro
