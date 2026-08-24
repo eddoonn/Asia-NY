@@ -53,7 +53,7 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5, trend_filter=False) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5, trend_filter=False, ref_window=None) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -62,6 +62,7 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
         atr = df["atr"].values
     index = df.index
     hours = np.asarray(index.hour)
+    dates = np.asarray(index.date)
     n = len(o)
 
     trades = []
@@ -80,22 +81,55 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
         first_pos = seg[0]
         if skip_sunday and index[first_pos].weekday() == 6:
             continue
+
+        dynamic_ref = False
+        if ref_window is not None:
+            rs, re_ = ref_window
+            ref_hours = set()
+            hcur = rs
+            for _ in range(24):
+                ref_hours.add(hcur)
+                if hcur == re_:
+                    break
+                hcur = (hcur + 1) % 24
+            trig_hours = set(np.asarray(index.hour)[asia_mask].tolist())
+            dynamic_ref = bool(ref_hours & trig_hours)
+
         ref = None
-        for p in range(int(did) - 1, int(did) - 8, -1):
-            lv = levels.get(p)
-            if lv and lv[2] < first_pos:
-                ref = lv
-                break
-        if ref is None:
-            continue
+        if not dynamic_ref:
+            for p in range(int(did) - 1, int(did) - 8, -1):
+                lv = levels.get(p)
+                if lv and lv[2] < first_pos:
+                    ref = lv
+                    break
+            if ref is None:
+                continue
 
         entry = None
         for pos in seg:
             a = atr[pos]
             if not np.isfinite(a) or a <= 0:
                 continue
+            if dynamic_ref:
+                from datetime import timedelta as _td
+                d_here = dates[pos]
+                prev = d_here - _td(days=1)
+                rs, re_ = ref_window
+                if rs <= re_:
+                    sel = (dates == d_here) & (hours >= rs) & (hours < re_)
+                else:
+                    sel = ((dates == prev) & (hours >= rs)) | ((dates == d_here) & (hours < re_))
+                sel = sel.copy()
+                sel[pos:] = False
+                if not sel.any():
+                    continue
+                spos = np.where(sel)[0]
+                rh = float(h[spos].max())
+                rl = float(l[spos].min())
+                ref = (rh, rl, int(spos[-1]), float(o[spos][0]), float(c[spos][-1]))
+            else:
+                rh, rl = ref[0], ref[1]
             buf = entry_buffer * a
-            rh, rl = ref[0], ref[1]
             short_trig = h[pos] >= rh + buf
             long_trig = l[pos] <= rl - buf
             if trend_filter and len(ref) >= 5:

@@ -35,7 +35,8 @@ def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mod
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
                          entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost,
                          skip_sunday=skip_sunday, entry_bar_tp=entry_bar_tp,
-                         sl_mode=sl_mode, wick_buffer=wick_buffer, trend_filter=trend_filter)
+                         sl_mode=sl_mode, wick_buffer=wick_buffer, trend_filter=trend_filter,
+                         ref_window=ny_late)
     return summarize(trades), trades
 
 
