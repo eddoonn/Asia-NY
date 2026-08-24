@@ -49,7 +49,7 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -107,6 +107,19 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
             else:
                 sl = level - risk
                 tp = rh if tp_mode == "opposite" else level + rr * risk
+            if sl_mode == "wick":
+                if side == "short":
+                    wick = h[pos]
+                    sl = wick + wick_buffer * a
+                    risk = sl - level
+                    tp = rl if tp_mode == "opposite" else level - rr * risk
+                else:
+                    wick = l[pos]
+                    sl = wick - wick_buffer * a
+                    risk = level - sl
+                    tp = rh if tp_mode == "opposite" else level + rr * risk
+                if risk <= 0:
+                    continue
             if entry_mode == "stop":
                 entry = (side, pos, float(level), float(sl), float(tp), float(risk))
             elif entry_mode == "stop-next":
