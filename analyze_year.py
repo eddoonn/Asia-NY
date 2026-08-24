@@ -26,13 +26,14 @@ def main():
     p.add_argument("--year", default="2026")
     p.add_argument("--symbol", default="GC=F")
     p.add_argument("--cost", type=float, default=0.3)
+    p.add_argument("--entry-mode", default="stop")
     p.add_argument("--tag", default="")
     p.add_argument("--skip-sunday", action="store_true")
     a = p.parse_args()
     year = a.year
     df = load_data(a.symbol, "365d", "60m")
     add_atr(df, ATR_LEN)
-    _, trades = run_config(df, ASIA, NY_LATE, RR, ATR_MULT, BUF, "stop", "rr",
+    _, trades = run_config(df, ASIA, NY_LATE, RR, ATR_MULT, BUF, a.entry_mode, "rr",
                            EXIT_HOUR, cost=a.cost, skip_sunday=a.skip_sunday)
     t = pd.DataFrame(trades)
     t = t[t["entry_time"].dt.year == int(year)].copy().reset_index(drop=True)

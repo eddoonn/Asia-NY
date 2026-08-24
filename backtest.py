@@ -25,14 +25,15 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False):
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True):
     index = df.index
     high = df["High"].values
     low = df["Low"].values
     asia_mask, asia_day_id = asia_day_ids(index, asia)
     levels = ny_levels(index, high, low, ny_late)
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
-                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost, skip_sunday=skip_sunday)
+                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost,
+                         skip_sunday=skip_sunday, entry_bar_tp=entry_bar_tp)
     return summarize(trades), trades
 
 
@@ -46,7 +47,7 @@ def main():
     p.add_argument("--atr-len", type=int, default=14)
     p.add_argument("--asia", default="0-9")
     p.add_argument("--ny-late", default="18-22")
-    p.add_argument("--entry-mode", choices=["stop", "close"], default="stop")
+    p.add_argument("--entry-mode", choices=["stop", "stop-next", "close"], default="stop")
     p.add_argument("--entry-buffer", type=float, default=0.0)
     p.add_argument("--tp-mode", choices=["rr", "opposite"], default="rr")
     p.add_argument("--exit-hour", type=int, default=9)

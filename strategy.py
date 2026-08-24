@@ -49,7 +49,7 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -109,6 +109,10 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
                 tp = rh if tp_mode == "opposite" else level + rr * risk
             if entry_mode == "stop":
                 entry = (side, pos, float(level), float(sl), float(tp), float(risk))
+            elif entry_mode == "stop-next":
+                if pos + 1 >= n:
+                    continue
+                entry = (side, pos + 1, float(o[pos + 1]), float(sl), float(tp), float(risk))
             else:
                 if pos + 1 >= n:
                     continue
@@ -121,16 +125,17 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
         result_r = exit_px = exit_pos = reason = None
         mae = mfe = 0.0
         for pos in range(epos, n):
+            first_bar = (pos == epos)
             if side == "short":
                 mae = max(mae, h[pos] - entry_px)
                 mfe = max(mfe, entry_px - l[pos])
                 hit_sl = h[pos] >= sl
-                hit_tp = l[pos] <= tp
+                hit_tp = l[pos] <= tp and not (first_bar and not entry_bar_tp)
             else:
                 mae = max(mae, entry_px - l[pos])
                 mfe = max(mfe, h[pos] - entry_px)
                 hit_sl = l[pos] <= sl
-                hit_tp = h[pos] >= tp
+                hit_tp = h[pos] >= tp and not (first_bar and not entry_bar_tp)
             if hit_sl:
                 gross = -risk
                 result_r, exit_px, exit_pos, reason = (gross - cost) / risk, sl, pos, "sl"

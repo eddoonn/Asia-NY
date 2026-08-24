@@ -1,6 +1,6 @@
 import pandas as pd
 
-tags = {"gold": "GOLD", "eurusd": "EURUSD", "gbpusd": "GBPUSD", "usdjpy": "USDJPY"}
+tags = {"gold_real": "GOLD", "eurusd_real": "EURUSD", "gbpusd_real": "GBPUSD", "usdjpy_real": "USDJPY"}
 frames = {}
 for tag, name in tags.items():
     m = pd.read_csv(f"results/months_2026_{tag}.csv")
