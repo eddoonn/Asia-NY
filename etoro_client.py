@@ -22,7 +22,8 @@ class EtoroClient:
         return str(uuid.uuid4())
 
     def search(self, symbol):
-        r = requests.get(f"{BASE}/api/v1/market-data/search", headers=self.headers,
+        h = {**self.headers, "x-request-id": self._rid()}
+        r = requests.get(f"{BASE}/api/v1/market-data/search", headers=h,
                          params={"internalSymbolFull": symbol}, timeout=20)
         r.raise_for_status()
         return r.json()
@@ -50,9 +51,10 @@ class EtoroClient:
             raise RuntimeError(f"eToro place order -> {r.status_code}: {r.text}")
         return r.json()
 
-    def lookup(self, order_id):
+    def lookup(self, order_id, reference_id=None):
+        h = {**self.headers, "x-request-id": reference_id or self._rid()}
         path = f"{BASE}/api/v2/trading/info/{self._seg()}/orders:lookup"
-        r = requests.get(path, headers=self.headers, params={"orderId": order_id}, timeout=20)
+        r = requests.get(path, headers=h, params={"orderId": order_id}, timeout=20)
         if r.status_code >= 400:
             raise RuntimeError(f"eToro lookup {order_id} -> {r.status_code}: {r.text}")
         return r.json()
@@ -72,4 +74,27 @@ class EtoroClient:
         r = requests.post(path, headers=h, json=payload, timeout=20)
         if r.status_code >= 400:
             raise RuntimeError(f"eToro close {position_id} -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def portfolio(self):
+        h = {**self.headers, "x-request-id": self._rid()}
+        r = requests.get(f"{BASE}/api/v1/trading/info/{self._seg()}/portfolio", headers=h, timeout=20)
+        if r.status_code >= 400:
+            raise RuntimeError(f"eToro portfolio -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def history(self, min_date):
+        h = {**self.headers, "x-request-id": self._rid()}
+        r = requests.get(f"{BASE}/api/v1/trading/info/trade/{self._seg()}/history",
+                         headers=h, params={"minDate": min_date, "pageSize": 100}, timeout=20)
+        if r.status_code >= 400:
+            raise RuntimeError(f"eToro history -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def close_order_info(self, order_id):
+        h = {**self.headers, "x-request-id": self._rid()}
+        r = requests.get(f"{BASE}/api/v1/trading/info/{self._seg()}/close-orders/{order_id}",
+                         headers=h, timeout=20)
+        if r.status_code >= 400:
+            raise RuntimeError(f"eToro close-order info {order_id} -> {r.status_code}: {r.text}")
         return r.json()

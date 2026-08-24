@@ -83,24 +83,44 @@ def run_etoro(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_
             ("sellShort", short_level, short_level + stop_dist, short_level - limit_dist),
             ("buy", long_level, long_level - stop_dist, long_level + limit_dist)):
         r = client.place_mit(inst, txn, trigger, sl, tp, units)
-        orders.append({"order_id": r.get("orderId"), "transaction": txn,
-                       "trigger": trigger, "instrument_id": instrument_id})
+        orders.append({"order_id": r.get("orderId"), "reference_id": r.get("referenceId"),
+                       "transaction": txn,
+                       "trigger": trigger, "sl": sl, "tp": tp,
+                       "units": units, "risk_amount": risk_amount,
+                       "instrument_id": instrument_id})
         print(f"Placed {txn} MIT @ {trigger:.2f} SL {sl:.2f} TP {tp:.2f} -> {r}")
 
     os.makedirs("results", exist_ok=True)
     with open("results/etoro_session.json", "w") as f:
-        json.dump({"orders": orders}, f, indent=2)
+        json.dump({"orders": orders, "risk_amount": risk_amount}, f, indent=2)
 
     hook = load_webhook()
     if hook:
-        fields = [{"name": f"{'SHORT' if t == 'sellShort' else 'LONG'} MIT", "value":
-                   f"{tr:.2f} (SL {sl:.2f} / TP {tp:.2f})", "inline": True}
-                  for (_, tr, sl, tp) in
-                  [("sellShort", short_level, short_level + stop_dist, short_level - limit_dist),
-                   ("buy", long_level, long_level - stop_dist, long_level + limit_dist)]]
-        send(hook, {"title": "eToro MIT orders placed — Asia Grab", "color": GREEN,
-                    "fields": fields,
-                    "footer": {"text": f"{units} oz | risk {risk_pct}% = {risk_amount:.0f} USD"}})
+        send(hook, {
+            "title": "Orders placed for tonight's Asia session",
+            "color": BLUE,
+            "description": (
+                "**The setup:** yesterday's NY close left a high and a low. "
+                "If Asia sweeps one of them, we fade the move.\n"
+                "Two resting trigger orders are live on eToro — **whichever level is touched first fills, "
+                "the other is cancelled at 09:05 London.** No touch = no trade."),
+            "fields": [
+                {"name": "SHORT — if price sweeps ABOVE",
+                 "value": (f"Fill at **{short_level:,.2f}**\n"
+                           f"Stop {short_level + stop_dist:,.2f}\n"
+                           f"Target {short_level - limit_dist:,.2f}"),
+                 "inline": True},
+                {"name": "LONG — if price sweeps BELOW",
+                 "value": f"Fill at **{long_level:,.2f}**\nStop {long_level - stop_dist:,.2f}\nTarget {long_level + limit_dist:,.2f}",
+                 "inline": True},
+                {"name": "Position size",
+                 "value": f"{units:.2f} oz (~${risk_amount:,.0f} risk, 1% of account)",
+                 "inline": False},
+                {"name": "Next message you'll get",
+                 "value": "The session result with exact profit/loss in $ and R (sent ~09:05 London, or after the trade closes)",
+                 "inline": False},
+            ],
+            "footer": {"text": f"GOLD.24-7 · eToro {os.environ.get('ETORO_MODE', 'demo')} · session 22:00–10:00 UTC"}})
 
 
 def run_ig(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, dry):
