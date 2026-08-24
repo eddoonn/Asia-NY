@@ -24,13 +24,16 @@ def main():
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--year", default="2026")
+    p.add_argument("--symbol", default="GC=F")
+    p.add_argument("--cost", type=float, default=0.3)
+    p.add_argument("--tag", default="")
     p.add_argument("--skip-sunday", action="store_true")
     a = p.parse_args()
     year = a.year
-    df = load_data("GC=F", "365d", "60m")
+    df = load_data(a.symbol, "365d", "60m")
     add_atr(df, ATR_LEN)
     _, trades = run_config(df, ASIA, NY_LATE, RR, ATR_MULT, BUF, "stop", "rr",
-                           EXIT_HOUR, cost=COST, skip_sunday=a.skip_sunday)
+                           EXIT_HOUR, cost=a.cost, skip_sunday=a.skip_sunday)
     t = pd.DataFrame(trades)
     t = t[t["entry_time"].dt.year == int(year)].copy().reset_index(drop=True)
     if t.empty:
@@ -82,8 +85,9 @@ def main():
     print(f"  TOTAL 2026: {t['r'].sum() * risk:+.2f} USD")
 
     os.makedirs("results", exist_ok=True)
-    t.to_csv(f"results/trades_{year}.csv", index=False)
-    months.to_csv(f"results/months_{year}.csv", index=False)
+    tag = f"_{a.tag}" if a.tag else ""
+    t.to_csv(f"results/trades_{year}{tag}.csv", index=False)
+    months.to_csv(f"results/months_{year}{tag}.csv", index=False)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 9))
     colors = ["#00c853" if v > 0 else "#ff1744" for v in months["total_r"]]
