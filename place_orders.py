@@ -36,14 +36,13 @@ def session_levels(symbol):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Place Asia-grab stop orders on IG")
+    p = argparse.ArgumentParser(description="Place Asia-grab stop orders")
     p.add_argument("--symbol", default="GC=F")
+    p.add_argument("--broker", choices=["ig", "etoro"], default=os.environ.get("BROKER", "ig"))
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
     load_env()
-    epic = os.environ.get("IG_EPIC", "CS.D.USGLD.CFD.IP")
-    currency = os.environ.get("IG_CURRENCY", "GBP")
     account = float(os.environ.get("ACCOUNT_SIZE", "10000"))
     risk_pct = float(os.environ.get("RISK_PCT", "1.0"))
 
@@ -53,14 +52,67 @@ def main():
     stop_dist = ATR_MULT * atr
     limit_dist = RR * stop_dist
     risk_amount = account * risk_pct / 100.0
+
+    if args.broker == "etoro":
+        run_etoro(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, args.dry_run)
+    else:
+        run_ig(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, args.dry_run)
+
+
+def run_etoro(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, dry):
+    import json
+    from etoro_client import EtoroClient
+    symbol = os.environ.get("ETORO_SYMBOL", "GOLD")
+    units = round(risk_amount / stop_dist, 4)
+
+    print(f"eToro ({os.environ.get('ETORO_MODE', 'demo')}) instrument {symbol}")
+    print(f"NY-late high/low sweep: SELL_SHORT MIT {short_level:.2f} | BUY MIT {long_level:.2f}")
+    print(f"stop_dist {stop_dist:.2f} limit_dist {limit_dist:.2f} units {units} oz "
+          f"(risk {risk_amount:.2f} USD)")
+    if dry:
+        print("DRY RUN — no orders placed")
+        return
+
+    client = EtoroClient()
+    inst = client.resolve(symbol)
+    instrument_id = inst["instrumentId"]
+    print(f"Resolved {inst.get('internalSymbolFull')} -> id {instrument_id}")
+
+    orders = []
+    for txn, trigger, sl, tp in (
+            ("sellShort", short_level, short_level + stop_dist, short_level - limit_dist),
+            ("buy", long_level, long_level - stop_dist, long_level + limit_dist)):
+        r = client.place_mit(inst, txn, trigger, sl, tp, units)
+        orders.append({"order_id": r.get("orderId"), "transaction": txn,
+                       "trigger": trigger, "instrument_id": instrument_id})
+        print(f"Placed {txn} MIT @ {trigger:.2f} SL {sl:.2f} TP {tp:.2f} -> {r}")
+
+    os.makedirs("results", exist_ok=True)
+    with open("results/etoro_session.json", "w") as f:
+        json.dump({"orders": orders}, f, indent=2)
+
+    hook = load_webhook()
+    if hook:
+        fields = [{"name": f"{'SHORT' if t == 'sellShort' else 'LONG'} MIT", "value":
+                   f"{tr:.2f} (SL {sl:.2f} / TP {tp:.2f})", "inline": True}
+                  for (_, tr, sl, tp) in
+                  [("sellShort", short_level, short_level + stop_dist, short_level - limit_dist),
+                   ("buy", long_level, long_level - stop_dist, long_level + limit_dist)]]
+        send(hook, {"title": "eToro MIT orders placed — Asia Grab", "color": GREEN,
+                    "fields": fields,
+                    "footer": {"text": f"{units} oz | risk {risk_pct}% = {risk_amount:.0f} USD"}})
+
+
+def run_ig(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, dry):
+    epic = os.environ.get("IG_EPIC", "CS.D.USGLD.CFD.IP")
+    currency = os.environ.get("IG_CURRENCY", "GBP")
     size = round(risk_amount / stop_dist, 2)
 
-    print(f"NY-late high/low: {ref[0]:.2f} / {ref[1]:.2f}  ATR{ATR_LEN}: {atr:.2f}")
-    print(f"SELL STOP {short_level:.2f} | BUY STOP {long_level:.2f}")
+    print(f"NY-late sweep: SELL STOP {short_level:.2f} | BUY STOP {long_level:.2f}")
     print(f"stop_dist {stop_dist:.2f} limit_dist {limit_dist:.2f} "
           f"size {size} {currency} risk {risk_amount:.2f}")
 
-    if args.dry_run:
+    if dry:
         print("DRY RUN — no orders placed")
         return
 
