@@ -2,24 +2,24 @@ name: asia-grab
 
 on:
   schedule:
-    - cron: '5 22 * * *'
     - cron: '5 8 * * *'
-    - cron: '5 22,23,0-9 * * *'
+    - cron: '5 17 * * *'
+    - cron: '5 22,23,0-10,7-13 * * *'
   workflow_dispatch:
     inputs:
       job:
         description: 'Which script to run'
         required: true
-        default: 'place'
+        default: 'monitor'
         type: choice
-        options: [place, end, monitor]
+        options: [monitor, end, place]
 
 permissions:
   contents: write
 
 jobs:
   monitor:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || github.event.schedule == '5 22,23,0-9 * * *'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || github.event.schedule == '5 22,23,0-10,7-13 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
           git push
 
   place:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'place' || github.event.schedule == '5 22 * * *'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'place'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +77,7 @@ jobs:
           git push
 
   end:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'end' || github.event.schedule == '5 8 * * *'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'end' || github.event.schedule == '5 8 * * *' || github.event.schedule == '5 17 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -15,7 +15,7 @@ PROFILES = [
                ("GBPJPY", "GBPJPY=X"), ("AUDJPY", "AUDJPY=X")]},
     {"name": "london", "trigger": (7, 13), "reference": (22, 10), "exit_hour": 17,
      "pairs": [("EURUSD", "EURUSD=X"), ("GBPUSD", "GBPUSD=X"),
-               ("USDJPY", "USDJPY=X"), ("GOLD", "GC=F")]},
+               ("USDJPY", "USDJPY=X")]},
 ]
 ENTRY_BUFFER = 1.0
 WICK_BUFFER = 0.25
@@ -51,16 +51,23 @@ def check_signal(client, profile, name, sym, risk, now, state, dry):
     df = load_data(sym, "10d", "60m")
     add_atr(df, 10)
     idx = df.index
-    bar, bar_ts = last_closed_bar(df, now)
-    if not in_window(bar_ts.to_pydatetime().replace(tzinfo=timezone.utc), profile["trigger"]):
+    if idx[-1].hour == now.hour and now - idx[-1] < pd.Timedelta(minutes=59):
+        df = df.iloc[:-1]
+        idx = df.index
+    bar = df.iloc[-1]
+    bar_ts = idx[-1]
+    s, e = profile["trigger"]
+    if not ((s <= e and s <= bar_ts.hour < e) or (s > e and (bar_ts.hour >= s or bar_ts.hour < e))):
         return None
 
-    levels = ny_levels(idx, df["High"].values, df["Low"].values, profile["reference"],
-                       opens=df["Open"].values, closes=df["Close"].values)
-    cur_id = int(day_ids(idx)[-1])
+    df_lvl = df.iloc[:-1]
+    idx_lvl = df_lvl.index
+    levels = ny_levels(idx_lvl, df_lvl["High"].values, df_lvl["Low"].values, profile["reference"],
+                       opens=df_lvl["Open"].values, closes=df_lvl["Close"].values)
+    cur_id = int(day_ids(idx_lvl)[-1])
     ref = None
     for p in range(cur_id, cur_id - 8, -1):
-        if p in levels and levels[p][2] < int(day_ids(idx).get_indexer([bar_ts])[0]):
+        if p in levels:
             ref = levels[p]
             break
     if ref is None:

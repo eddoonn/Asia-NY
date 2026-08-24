@@ -1,6 +1,17 @@
-# Asia Session Gold Liquidity Grab Reversal
+# Sweep Reclaim — Asia/London Session Liquidity Strategies
 
-Backtest of the "Asia session hunts New York's final-hours high/low, then reverses" strategy for gold.
+Two validated main strategies, forward-tested on eToro demo:
+
+1. **Tokyo Reclaim** — Tokyo session sweeps the prior NY-late (19:00–21:00 UTC) extreme and *fails to hold it* (hourly close back inside) → enter with the market; SL beyond the sweep wick + 0.5×ATR; TP at the opposite NY level. Pairs: USD/EUR/GBP/AUD-JPY. 2026 verified: 74 trades, 74.3% WR, +45.7R, t=+4.84; replicated out-of-sample on 3 untouched crosses.
+2. **London Reclaim** — London session (07:00–13:00 UTC) sweeps the current Asia range (built dynamically, no look-ahead) and reclaims it → same mechanics. Pairs: EURUSD, GBPUSD, USDJPY. 2026 verified: 133 trades, 45.1% WR, +157.1R, t=+4.27; 3/3 FX pairs positive in walk-forward train+test. (London-GOLD excluded: failed walk-forward, t=0.93.)
+
+Combined 2026 verified: 207 trades, +202.7R, t=+5.32, maxDD 9.87R, 7/8 months positive. Every trade independently re-derived from raw OHLC (207/207 match). Full adversarial audit passed: 3× costs, SL slippage, parameter neighborhood, bootstrap P(loss)=0%, entry-gap, sub-period, leave-one-out.
+
+**Execution:** `reclaim_monitor.py` runs hourly; on a confirmed sweep+reclaim hourly close it places a market order with attached SL/TP. `end_session.py` (08:05 & 17:05 UTC) closes leftovers and reports P&L to Discord.
+
+## Original research log
+
+The original "Asia session hunts New York's final-hours high/low, then reverses" gold strategy — and why the naive hourly version failed — is documented below and in the research scripts.
 
 ## Logic
 
