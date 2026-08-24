@@ -76,6 +76,20 @@ class EtoroClient:
             raise RuntimeError(f"eToro close {position_id} -> {r.status_code}: {r.text}")
         return r.json()
 
+    def place_market(self, instrument_id, transaction, units, sl, tp, leverage=10):
+        payload = {"action": "open", "transaction": transaction,
+                   "instrumentId": instrument_id,
+                   "orderType": "mkt", "leverage": leverage,
+                   "units": round(float(units), 4), "orderCurrency": "usd",
+                   "stopLossRate": round(float(sl), 3),
+                   "takeProfitRate": round(float(tp), 3)}
+        path = f"{BASE}/api/v2/trading/execution/{self._seg()}/orders"
+        h = {**self.headers, "x-request-id": self._rid()}
+        r = requests.post(path, headers=h, json=payload, timeout=20)
+        if r.status_code >= 400:
+            raise RuntimeError(f"eToro market order -> {r.status_code}: {r.text}")
+        return r.json()
+
     def portfolio(self):
         h = {**self.headers, "x-request-id": self._rid()}
         r = requests.get(f"{BASE}/api/v1/trading/info/{self._seg()}/portfolio", headers=h, timeout=20)

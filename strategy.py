@@ -38,18 +38,20 @@ def asia_day_ids(index: pd.DatetimeIndex, window):
     return mask, np.where(mask, ids, -1)
 
 
-def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window) -> dict:
+def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window, opens: np.ndarray = None, closes: np.ndarray = None) -> dict:
     mask = session_mask(index, window)
     ids = day_ids(index)
     levels = {}
     for did in np.unique(ids[mask]):
         sel = mask & (ids == did)
         pos = np.where(sel)[0]
-        levels[int(did)] = (float(high[pos].max()), float(low[pos].min()), int(pos[-1]))
+        o = float(opens[pos[0]]) if opens is not None else 0.0
+        c = float(closes[pos[-1]]) if closes is not None else 0.0
+        levels[int(did)] = (float(high[pos].max()), float(low[pos].min()), int(pos[-1]), o, c)
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5, trend_filter=False) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -94,11 +96,25 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
             rh, rl = ref[0], ref[1]
             short_trig = h[pos] >= rh + buf
             long_trig = l[pos] <= rl - buf
+            if trend_filter and len(ref) >= 5:
+                bull = ref[4] > ref[3]
+                if bull:
+                    short_trig = False
+                else:
+                    long_trig = False
             if short_trig and long_trig:
                 continue
             if not (short_trig or long_trig):
                 continue
-            side = "short" if short_trig else "long"
+            if entry_mode == "reclaim":
+                if short_trig and c[pos] < rh:
+                    side = "short"
+                elif long_trig and c[pos] > rl:
+                    side = "long"
+                else:
+                    continue
+            else:
+                side = "short" if short_trig else "long"
             level = rh + buf if side == "short" else rl - buf
             risk = atr_mult * a
             if side == "short":

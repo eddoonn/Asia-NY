@@ -25,13 +25,21 @@ def run_etoro(dry):
     from etoro_client import EtoroClient
 
     state_path = "results/etoro_session.json"
-    if not os.path.exists(state_path):
-        print("No eToro session state found — nothing to clean up")
+    reclaim_path = "results/reclaim_session.json"
+    orders, risk_amount = [], 100.0
+    loaded = False
+    for sp in (state_path, reclaim_path):
+        if os.path.exists(sp):
+            s = json.load(open(sp))
+            orders.extend(s.get("orders", []))
+            risk_amount = float(s.get("risk_amount") or risk_amount)
+            loaded = True
+    if not loaded:
+        print("No session state found — nothing to clean up")
         return
-    with open(state_path) as f:
-        state = json.load(f)
-    orders = state["orders"]
-    risk_amount = float(state.get("risk_amount") or orders[0].get("risk_amount") or 100.0)
+    if not orders:
+        print("Session state has no orders — nothing to clean up")
+        return
 
     if dry:
         print(f"DRY RUN — would check {len(orders)} eToro order(s): "
@@ -113,7 +121,9 @@ def run_etoro(dry):
         if not handled:
             results.append({"side": side, "pnl": 0.0, "r": 0.0, "error": "unknown status — check app"})
 
-    os.remove(state_path)
+    for sp in (state_path, reclaim_path):
+        if os.path.exists(sp):
+            os.remove(sp)
 
     trades = [r for r in results if not r.get("no_fill") and not r.get("error")]
     no_fills = [r for r in results if r.get("no_fill")]

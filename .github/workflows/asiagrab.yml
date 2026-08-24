@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '5 22 * * *'
     - cron: '5 8 * * *'
+    - cron: '5 22,23,0-9 * * *'
   workflow_dispatch:
     inputs:
       job:
@@ -11,12 +12,39 @@ on:
         required: true
         default: 'place'
         type: choice
-        options: [place, end]
+        options: [place, end, monitor]
 
 permissions:
   contents: write
 
 jobs:
+  monitor:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || github.event.schedule == '5 22,23,0-9 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Tokyo-reclaim hourly monitor
+        env:
+          ETORO_PUBLIC_KEY: ${{ secrets.ETORO_PUBLIC_KEY }}
+          ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
+          ETORO_MODE: demo
+          BROKER: etoro
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ACCOUNT_SIZE: '10000'
+          RISK_PCT: '1.0'
+        run: python reclaim_monitor.py
+      - name: Persist monitor state
+        run: |
+          git config user.name "asiagrab-bot"
+          git config user.email "bot@asiagrab"
+          git add results/reclaim_session.json || echo "no state"
+          git commit -m "monitor state $(date -u +%F_%H)" || echo "nothing to commit"
+          git push
+
   place:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'place' || github.event.schedule == '5 22 * * *'
     runs-on: ubuntu-latest

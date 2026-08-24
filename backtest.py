@@ -25,16 +25,17 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5):
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False, entry_bar_tp=True, sl_mode="atr", wick_buffer=0.5, trend_filter=False):
     index = df.index
     high = df["High"].values
     low = df["Low"].values
     asia_mask, asia_day_id = asia_day_ids(index, asia)
-    levels = ny_levels(index, high, low, ny_late)
+    levels = ny_levels(index, high, low, ny_late,
+                       opens=df["Open"].values, closes=df["Close"].values)
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
                          entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost,
                          skip_sunday=skip_sunday, entry_bar_tp=entry_bar_tp,
-                         sl_mode=sl_mode, wick_buffer=wick_buffer)
+                         sl_mode=sl_mode, wick_buffer=wick_buffer, trend_filter=trend_filter)
     return summarize(trades), trades
 
 
