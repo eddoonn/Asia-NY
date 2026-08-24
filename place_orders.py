@@ -39,12 +39,23 @@ def main():
     p = argparse.ArgumentParser(description="Place Asia-grab stop orders")
     p.add_argument("--symbol", default="GC=F")
     p.add_argument("--broker", choices=["ig", "etoro"], default=os.environ.get("BROKER", "ig"))
+    p.add_argument("--skip-sunday", action="store_true",
+                   default=os.environ.get("SKIP_SUNDAY", "0") == "1")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
     load_env()
     account = float(os.environ.get("ACCOUNT_SIZE", "10000"))
     risk_pct = float(os.environ.get("RISK_PCT", "1.0"))
+
+    if args.skip_sunday and pd.Timestamp.now(tz="UTC").weekday() == 6:
+        msg = "Sunday session — skipped by --skip-sunday filter (thin liquidity)"
+        print(msg)
+        hook = load_webhook()
+        if hook:
+            send(hook, {"title": "No orders tonight — Sunday filter", "color": GRAY,
+                        "description": msg})
+        return
 
     ref, atr = session_levels(args.symbol)
     short_level = ref[0] + BUF * atr

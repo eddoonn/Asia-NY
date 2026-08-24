@@ -41,7 +41,8 @@ def sweep(df, atrs, args):
         tp_mode = "opposite" if tp == "opposite" else "rr"
         rr = None if tp == "opposite" else tp
         stats, trades = run_config(df, asia, ny_late, rr, atr_mult, buf, "stop",
-                                   tp_mode, exit_hour, atr=atrs[atr_len], cost=args.cost)
+                                   tp_mode, exit_hour, atr=atrs[atr_len], cost=args.cost,
+                                   skip_sunday=args.skip_sunday)
         if stats.get("trades", 0) < args.min_trades:
             continue
         segs = segment_r(trades, args.segments)
@@ -84,6 +85,7 @@ def main():
     p.add_argument("--oos-split", type=float, default=0.7,
                    help="fraction of data used for training; rest is untouched test set (0 disables)")
     p.add_argument("--validate", type=int, default=20, help="top-N train configs to evaluate out-of-sample")
+    p.add_argument("--skip-sunday", action="store_true")
     args = p.parse_args()
 
     df = load_data(args.symbol, args.period, args.interval)

@@ -49,7 +49,7 @@ def ny_levels(index: pd.DatetimeIndex, high: np.ndarray, low: np.ndarray, window
     return levels
 
 
-def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0) -> list:
+def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False) -> list:
     o = df["Open"].values
     h = df["High"].values
     l = df["Low"].values
@@ -74,6 +74,8 @@ def find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult, entry_buffer, 
         if len(seg) < 2:
             continue
         first_pos = seg[0]
+        if skip_sunday and index[first_pos].weekday() == 6:
+            continue
         ref = None
         for p in range(int(did) - 1, int(did) - 8, -1):
             lv = levels.get(p)

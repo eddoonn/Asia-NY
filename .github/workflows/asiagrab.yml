@@ -36,6 +36,7 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ACCOUNT_SIZE: '10000'
           RISK_PCT: '1.0'
+          SKIP_SUNDAY: '1'
         run: python place_orders.py --broker etoro
       - name: Save session state
         run: |

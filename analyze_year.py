@@ -21,11 +21,16 @@ def month_drawdown(r):
 
 
 def main():
-    year = "2026"
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--year", default="2026")
+    p.add_argument("--skip-sunday", action="store_true")
+    a = p.parse_args()
+    year = a.year
     df = load_data("GC=F", "365d", "60m")
     add_atr(df, ATR_LEN)
     _, trades = run_config(df, ASIA, NY_LATE, RR, ATR_MULT, BUF, "stop", "rr",
-                           EXIT_HOUR, cost=COST)
+                           EXIT_HOUR, cost=COST, skip_sunday=a.skip_sunday)
     t = pd.DataFrame(trades)
     t = t[t["entry_time"].dt.year == int(year)].copy().reset_index(drop=True)
     if t.empty:

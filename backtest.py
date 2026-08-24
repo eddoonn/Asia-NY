@@ -25,14 +25,14 @@ def load_data(symbol: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0):
+def run_config(df, asia, ny_late, rr, atr_mult, entry_buffer, entry_mode, tp_mode, exit_hour, atr=None, cost=0.0, skip_sunday=False):
     index = df.index
     high = df["High"].values
     low = df["Low"].values
     asia_mask, asia_day_id = asia_day_ids(index, asia)
     levels = ny_levels(index, high, low, ny_late)
     trades = find_trades(df, asia_mask, asia_day_id, levels, rr, atr_mult,
-                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost)
+                         entry_buffer, entry_mode, tp_mode, exit_hour, atr=atr, cost=cost, skip_sunday=skip_sunday)
     return summarize(trades), trades
 
 
@@ -54,6 +54,7 @@ def main():
                    help="round-trip spread+slippage+fees in price units (e.g. 0.3 for GC)")
     p.add_argument("--account", type=float, default=10000.0)
     p.add_argument("--risk-pct", type=float, default=1.0)
+    p.add_argument("--skip-sunday", action="store_true")
     args = p.parse_args()
 
     asia = tuple(int(x) for x in args.asia.split("-"))
@@ -64,7 +65,7 @@ def main():
 
     stats, trades = run_config(df, asia, ny_late, args.rr, args.atr_mult,
                                args.entry_buffer, args.entry_mode, args.tp_mode, args.exit_hour,
-                               cost=args.cost)
+                               cost=args.cost, skip_sunday=args.skip_sunday)
 
     print(f"\nSymbol={args.symbol} period={args.period} interval={args.interval}")
     print(f"Asia={asia} NY-late={ny_late} entry={args.entry_mode} buf={args.entry_buffer} "
