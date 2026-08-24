@@ -78,6 +78,21 @@ def run_etoro(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_
     instrument_id = inst["instrumentId"]
     print(f"Resolved {inst.get('internalSymbolFull')} -> id {instrument_id}")
 
+    try:
+        pf = client.portfolio()
+        pending = [o for o in (pf.get("clientPortfolio", {}).get("orders") or [])
+                   if o.get("instrumentID") == instrument_id]
+        if pending:
+            msg = f"Orders already resting for {symbol} ({len(pending)}) — skipping to avoid duplicates"
+            print(msg)
+            hook = load_webhook()
+            if hook:
+                send(hook, {"title": "Orders already placed — skipped", "color": GRAY,
+                            "description": msg})
+            return
+    except Exception as e:
+        print(f"Duplicate check failed ({e}) — continuing")
+
     orders = []
     for txn, trigger, sl, tp in (
             ("sellShort", short_level, short_level + stop_dist, short_level - limit_dist),

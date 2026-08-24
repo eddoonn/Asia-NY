@@ -1,0 +1,72 @@
+name: asia-grab
+
+on:
+  schedule:
+    - cron: '5 22 * * *'
+    - cron: '5 8 * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which script to run'
+        required: true
+        default: 'place'
+        type: choice
+        options: [place, end]
+
+permissions:
+  contents: write
+
+jobs:
+  place:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'place' || github.event.schedule == '5 22 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Place session orders
+        env:
+          ETORO_PUBLIC_KEY: ${{ secrets.ETORO_PUBLIC_KEY }}
+          ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
+          ETORO_MODE: demo
+          ETORO_SYMBOL: GOLD.24-7
+          BROKER: etoro
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ACCOUNT_SIZE: '10000'
+          RISK_PCT: '1.0'
+        run: python place_orders.py --broker etoro
+      - name: Save session state
+        run: |
+          git config user.name "asiagrab-bot"
+          git config user.email "bot@asiagrab"
+          git add results/etoro_session.json
+          git commit -m "session state $(date -u +%F)" || echo "nothing to commit"
+          git push
+
+  end:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'end' || github.event.schedule == '5 8 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: End session and report P&L
+        env:
+          ETORO_PUBLIC_KEY: ${{ secrets.ETORO_PUBLIC_KEY }}
+          ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
+          ETORO_MODE: demo
+          ETORO_SYMBOL: GOLD.24-7
+          BROKER: etoro
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python end_session.py --broker etoro
+      - name: Clear session state
+        run: |
+          git config user.name "asiagrab-bot"
+          git config user.email "bot@asiagrab"
+          git rm -f results/etoro_session.json || echo "no state"
+          git commit -m "clear session state $(date -u +%F)" || echo "nothing to commit"
+          git push
