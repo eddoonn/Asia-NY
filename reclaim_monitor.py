@@ -11,14 +11,14 @@ from strategy import add_atr, day_ids, ny_levels
 
 PROFILES = [
     {"name": "tokyo", "trigger": (22, 10), "reference": (19, 21), "exit_hour": 8,
+     "entry_buffer": 1.0, "wick_buffer": 0.5,
      "pairs": [("USDJPY", "USDJPY=X"), ("EURJPY", "EURJPY=X"),
                ("GBPJPY", "GBPJPY=X"), ("AUDJPY", "AUDJPY=X")]},
     {"name": "london", "trigger": (7, 13), "reference": (22, 10), "exit_hour": 17,
+     "entry_buffer": 0.5, "wick_buffer": 0.25,
      "pairs": [("EURUSD", "EURUSD=X"), ("GBPUSD", "GBPUSD=X"),
                ("USDJPY", "USDJPY=X")]},
 ]
-ENTRY_BUFFER = 1.0
-WICK_BUFFER = 0.25
 STATE = "results/reclaim_session.json"
 BLUE, GRAY = 0x3498DB, 0x95A5A6
 
@@ -76,17 +76,17 @@ def check_signal(client, profile, name, sym, risk, now, state, dry):
 
     bar_o, bar_h, bar_l, bar_c = (float(bar[k]) for k in ("Open", "High", "Low", "Close"))
     atr = float(df["atr"].iloc[-1])
-    buf = ENTRY_BUFFER * atr
-    prev_day_bull = ref[4] > ref[3]
+    buf = float(profile.get("entry_buffer", 1.0)) * atr
+    wick_buf = float(profile.get("wick_buffer", 0.25))
 
     side = sl = tp = None
-    if bar_h >= rh + buf and bar_c < rh and not prev_day_bull:
+    if bar_h >= rh + buf and bar_c < rh:
         side = "sellShort"
-        sl = bar_h + WICK_BUFFER * atr
+        sl = bar_h + wick_buf * atr
         tp = rl
-    elif bar_l <= rl - buf and bar_c > rl and prev_day_bull:
+    elif bar_l <= rl - buf and bar_c > rl:
         side = "buy"
-        sl = bar_l - WICK_BUFFER * atr
+        sl = bar_l - wick_buf * atr
         tp = rh
     if side is None:
         return None
@@ -122,7 +122,11 @@ def main():
         state = json.load(open(STATE))
 
     account = float(os.environ.get("ACCOUNT_SIZE", "10000"))
-    risk = account * float(os.environ.get("RISK_PCT", "1.0")) / 100.0 / 4.0
+    risk_pct = float(os.environ.get("RISK_PCT", "1.0"))
+    risk_mode = os.environ.get("RISK_MODE", "each").lower()
+    risk_total = account * risk_pct / 100.0
+    # Validated sizing is per-instrument (RISK_MODE=each). Only divide if explicitly split.
+    risk = risk_total if risk_mode == "each" else risk_total / 4.0
 
     client = None
     signals = []

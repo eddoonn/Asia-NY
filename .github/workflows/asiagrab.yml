@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   monitor:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || github.event.schedule == '5 22,23,0-10,7-13 * * *'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Tokyo-reclaim hourly monitor
+      - name: Sweep-reclaim hourly monitor
         env:
           ETORO_PUBLIC_KEY: ${{ secrets.ETORO_PUBLIC_KEY }}
           ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
@@ -36,7 +36,9 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ACCOUNT_SIZE: '10000'
           RISK_PCT: '1.0'
-        run: python reclaim_monitor.py
+          RISK_MODE: each
+          SKIP_SUNDAY: '1'
+        run: python reclaim_monitor.py --force
       - name: Persist monitor state
         run: |
           git config user.name "asiagrab-bot"
@@ -77,7 +79,7 @@ jobs:
           git push
 
   end:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'end' || github.event.schedule == '5 8 * * *' || github.event.schedule == '5 17 * * *'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'end' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,11 +97,13 @@ jobs:
           RISK_MODE: each
           BROKER: etoro
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python end_session.py --broker etoro
+        run: |
+          H=$(date -u +%H)
+          if [ "$H" = "08" ]; then python end_session.py --broker etoro --profile tokyo; else python end_session.py --broker etoro --profile london; fi
       - name: Clear session state
         run: |
           git config user.name "asiagrab-bot"
           git config user.email "bot@asiagrab"
-          git rm -f results/etoro_session.json || echo "no state"
-          git commit -m "clear session state $(date -u +%F)" || echo "nothing to commit"
+          git rm -f results/etoro_session.json results/reclaim_session.json || echo "no state"
+          git commit -m "clear session state $(date -u +%F_%H)" || echo "nothing to commit"
           git push

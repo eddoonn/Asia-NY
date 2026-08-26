@@ -10,15 +10,17 @@ def main():
     p = argparse.ArgumentParser(description="Cancel unfilled orders and close open positions (session end)")
     p.add_argument("--broker", choices=["ig", "etoro"], default=os.environ.get("BROKER", "ig"))
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--profile", choices=["tokyo", "london"], default=None,
+                   help="only clean up orders for this profile (leaves other profile orders untouched)")
     args = p.parse_args()
 
     load_env()
     if args.broker == "etoro":
-        return run_etoro(args.dry_run)
+        return run_etoro(args.dry_run, profile=args.profile)
     return run_ig(args.dry_run)
 
 
-def run_etoro(dry):
+def run_etoro(dry, profile=None):
     import json
     import time
     from datetime import date, timedelta
@@ -28,15 +30,35 @@ def run_etoro(dry):
     reclaim_path = "results/reclaim_session.json"
     orders, risk_amount = [], 100.0
     loaded = False
+    raw_states = {}
     for sp in (state_path, reclaim_path):
         if os.path.exists(sp):
             s = json.load(open(sp))
+            raw_states[sp] = s
             orders.extend(s.get("orders", []))
-            risk_amount = float(s.get("risk_amount") or risk_amount)
+            risk_amount = float(s.get("risk_amount") or s.get("risk") or risk_amount)
+            # per-order risk_amount may override
+            for o in s.get("orders", []):
+                if o.get("risk_amount"):
+                    risk_amount = float(o["risk_amount"])
             loaded = True
     if not loaded:
         print("No session state found — nothing to clean up")
         return
+    if profile:
+        filt = [o for o in orders if o.get("profile") == profile]
+        kept = [o for o in orders if o.get("profile") != profile]
+        # legacy orders (from place_orders) have no profile — treat as tokyo for 08:05 cleanup
+        if profile == "tokyo":
+            legacy = [o for o in orders if not o.get("profile")]
+            filt.extend(legacy)
+            kept = [o for o in kept if o.get("profile")]
+        orders = filt
+        if not orders:
+            print(f"No {profile} orders to clean up — leaving {len(kept)} other-profile order(s) untouched")
+            return
+    else:
+        kept = []
     if not orders:
         print("Session state has no orders — nothing to clean up")
         return
@@ -121,9 +143,21 @@ def run_etoro(dry):
         if not handled:
             results.append({"side": side, "pnl": 0.0, "r": 0.0, "error": "unknown status — check app"})
 
-    for sp in (state_path, reclaim_path):
-        if os.path.exists(sp):
-            os.remove(sp)
+    if profile and kept:
+        # rewrite state files with remaining orders only
+        for sp, s in raw_states.items():
+            remaining = [o for o in s.get("orders", []) if o in kept]
+            if remaining:
+                s["orders"] = remaining
+                json.dump(s, open(sp, "w"), indent=2)
+            else:
+                if s.get("orders"):
+                    os.remove(sp)
+        print(f"Left {len(kept)} {profile}-unrelated order(s) in state for next session")
+    else:
+        for sp in (state_path, reclaim_path):
+            if os.path.exists(sp):
+                os.remove(sp)
 
     trades = [r for r in results if not r.get("no_fill") and not r.get("error")]
     no_fills = [r for r in results if r.get("no_fill")]
