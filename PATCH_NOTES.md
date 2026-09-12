@@ -203,32 +203,31 @@ Sessions are labelled by **trade date** — the day the session's daytime half
 falls on, which is the exchange's own convention and lines up with the entry
 `Entry time (UTC)` already shown in the daily alerts.
 
-Real output, week ending 2026-09-11:
+Real output, week ending 2026-09-11 (the copy is 5c's house style: only the
+categories that happened, and results in words rather than `tp`/`sl`):
 
 ```
-Asia Grab — weekly digest (Sep 06 – Sep 11)
-`5 sessions · 4 traded · 0 no sweep · 0 no levels · 0 closed · 1 no data · net +0.65R`
-
-`Mon 09-07` no trade — no price data, and the feed is silent either side (check the calendar)
-`Tue 09-08` LONG 06:00 → -1.02R (sl)
-`Wed 09-09` SHORT 05:00 → +0.73R (tp)
-`Thu 09-10` SHORT 02:00 → +0.73R (tp)
-`Fri 09-11` SHORT 06:00 → +0.20R (time)
-[Market closures]
-Labor Day — Mon 18:30 to Mon 22:00 UTC
+Asia Grab · weekly digest · Sep 06-Sep 11
+`5 sessions · 4 traded · net +0.65R · 1 no data`
+`Mon 09-07` no data · feed silent either side (check the calendar)
+`Tue 09-08` LONG 06:00 · -1.02R (stop hit)
+`Wed 09-09` SHORT 05:00 · +0.73R (target hit)
+`Thu 09-10` SHORT 02:00 · +0.73R (target hit)
+`Fri 09-11` SHORT 06:00 · +0.20R (time exit)
+[Market closures]  Labor Day: Mon 18:30 to Mon 22:00 UTC
+footer: GC=F · sessions 12h from the 17:00 CT open · TP 0.75R
 ```
 
 Backfilling the previous week reproduces the Discord log entry for entry:
 
 ```
-Asia Grab — weekly digest (Aug 30 – Sep 04)
-`5 sessions · 5 traded · 0 no sweep · 0 no levels · 0 closed · 0 no data · net +3.65R`
-
-`Mon 08-31` LONG 02:00 → +0.74R (tp)
-`Tue 09-01` LONG 07:00 → +0.73R (tp)
-`Wed 09-02` LONG 01:00 → +0.73R (tp)
-`Thu 09-03` SHORT 01:00 → +0.73R (tp)
-`Fri 09-04` LONG 06:00 → +0.72R (tp)
+Asia Grab · weekly digest · Aug 30-Sep 04
+`5 sessions · 5 traded · net +3.65R`
+`Mon 08-31` LONG 02:00 · +0.74R (target hit)
+`Tue 09-01` LONG 07:00 · +0.73R (target hit)
+`Wed 09-02` LONG 01:00 · +0.73R (target hit)
+`Thu 09-03` SHORT 01:00 · +0.73R (target hit)
+`Fri 09-04` LONG 06:00 · +0.72R (target hit)
 ```
 
 Every entry time, side and R matches the alert channel, including the 9/8
@@ -266,19 +265,31 @@ stays silent otherwise:
 ```
 
 Rendered from the real 2026-09-11 session - the sweep bar at 06:00, one run
-later, tape ending on that bar:
+later, tape ending on that bar. `Entry`/`Stop`/`Target` are inline fields, so
+Discord draws them as one row of columns:
 
 ```
-Asia Grab — GC=F TRIGGERED                        [blue]
-  Setup            SHORT — NY high swept
-  Status           LIVE — flat by 08:00 UTC (1h55m left)
-  Entry            4392.81
-  Stop             4411.62
-  Target           4378.70
-  Triggered at     4374.00 + 1xATR10 18.81
-  Entry time (UTC) 2026-09-11 06:00:00+00:00
-  buf 1xATR10 | TP 0.75R | one trade per session | session 2026-09-10 22:00-10:00 UTC | last 4394.80
+Asia Grab · GC=F · SHORT ENTRY                                  [blue]
+NY high swept · 4374.00 + 1xATR10 (18.81)
+  Entry:   4392.81        Stop:  4411.62        Target: 4378.70
+  Session: Flat 08:00 UTC (1h30m left) · TP 0.75R · 1 trade/session
+session 2026-09-10 · 2026-09-11 06:00 UTC · last 4394.80
 ```
+
+and the same session once the flatten has resolved it - the *same* builder, so a
+trade read at 06:00 and again at 08:10 reads as one event, not two:
+
+```
+Asia Grab · GC=F · SHORT CLOSED +0.20R (time exit)
+NY high swept · 4374.00 + 1xATR10 (18.81)
+  Entry:   4392.81        Stop:  4411.62        Target: 4378.70
+  Session: Flat 08:00 UTC · TP 0.75R · 1 trade/session
+session 2026-09-10 · 2026-09-11 06:00 UTC · last 4408.90
+```
+
+The dedupe key is unchanged by the rewrite (`2026-09-10T22:00:00+00:00|short|
+2026-09-11T06:00:00+00:00|4392.81`), so a message already posted under the old
+copy is still recognised as posted.
 
 Every number is the log's own for that session (`Entry 4392.81`, `Stop 4411.62`,
 `Target 4378.70`, quoted `NY-late high 4374.00`).
@@ -303,15 +314,136 @@ Three things it does deliberately:
   originally called `session` and clobbered the daily key - there is now a test
   for it.
 
-It also reports a trade it arrives *after* the fact: if the first run to see the
-fill is the 08:10 one, the status says `Triggered, then time +0.20R` (and goes
-red or green) instead of claiming a position that has already been flattened.
+It also reports a trade it arrives *after* the fact: a run that first sees the
+fill after the flatten posts the same message with the outcome in the title -
+`SHORT CLOSED +0.20R (time exit)`, in red or green - instead of claiming a
+position that is already gone.
 
-Seven new tests in `test_notify_session_state.py` (31 there now): the message and
+Seven new tests in `test_notify_session_state.py` (34 there now): the message and
 its flat deadline, exactly-one send across repeated runs, the state key not
 clobbering `session`, silence while only armed, silence with no session or a shut
 book, posting through a lagging feed, a finished trade reported as finished, and
 the two-entries-one-session key.
+
+## 5c. One voice for every message
+
+The channel is read on a phone in the middle of the night, and the copy had
+drifted: the same trade was a six-field wall as a daily result and a nine-line
+wall as an entry alert, the footer restated the ATR and the target rule the body
+already carried, and five scripts each had their own idea of what a message looks
+like. `discord_style.py` is now the single definition of the style, and
+`test_message_style.py` builds **every** message the stack can send - 18 shapes
+across the five scripts - and fails if any of them breaks it:
+
+| rule | why |
+|---|---|
+| title is `Asia Grab · <subject> · <STATE>` | a locked phone shows only this, so the headline lives here: which side, which outcome |
+| the state is in caps | `SHORT ENTRY`, not `armed` |
+| the description says what happened, in ≤3 short lines | words, not numbers |
+| ≤5 fields: 3 inline columns for the numbers, 1 line for the rule | columns scan; rules are stated once |
+| the footer is provenance only - session, clock, source | and repeats nothing from above |
+| no em dashes, no number twice in one line | `·` separates; a repeated price is a typo |
+
+`discord_style.problems()` is that rule set, so the style is enforced rather than
+described. Two of its checks are deliberately about *facts*, not numbers: the ATR,
+the target rule and the flatten may each be stated once, while the same *number*
+may legitimately repeat - a single-trade session's total is that trade's P&L, two
+legs of one sweep share a stop distance, and the last price can sit exactly on a
+level it also quotes.
+
+Before and after, the 2026-09-11 entry (the message the channel had been getting):
+
+```
+Asia Grab — GC=F TRIGGERED                        Asia Grab · GC=F · SHORT ENTRY
+  Setup            SHORT — NY high swept          NY high swept · 4374.00 + 1xATR10 (18.81)
+  Status           LIVE — flat by 08:00 UTC       Entry 4392.81 · Stop 4411.62 · Target 4378.70
+  Entry            4392.81                        Session: Flat 08:00 UTC (1h30m left) · TP 0.75R
+  Stop             4411.62                                  · 1 trade/session
+  Target           4378.70                        session 2026-09-10 · 2026-09-11 06:00 UTC · last 4394.80
+  Triggered at     4374.00 + 1xATR10 18.81
+  Entry time (UTC) 2026-09-11 06:00:00+00:00
+  buf 1xATR10 | TP 0.75R | one trade per session | session 2026-09-10 22:00-10:00 UTC | last 4394.80
+```
+
+Six facts survive (side, level it swept, entry, stop, target, deadline); four
+repetitions go, and every message in the channel now opens with the same brand,
+the same separator and the same order.
+
+Two structural changes came with it, both there so the style can be tested at all:
+
+* **One builder per message.** Every `send()` takes an embed from a named function
+  (`trade_embed`, `sweep_embed`, `result_embed`, `etoro_orders_embed`, ...), and
+  `test_message_style.py` fails if a dict literal is ever handed straight to
+  `send()` - such a message is invisible to the test.
+* **The entry alert and the daily result are the same builder.** `alert=True` only
+  changes the state word, so the 06:00 fill and the 08:10 result are the same
+  message read twice, which is also what makes `--trigger --test` a real test of
+  the live copy rather than a mock-up of it.
+
+`python test_message_style.py --show` prints all 18 shapes exactly as the channel
+renders them; the offline suite renders them too, so no message can be changed
+without the copy being reviewed.
+
+To review them **in** the channel rather than in a terminal, `post_samples.py`
+posts one of each, paced to the webhook rate limit, each carrying a `SAMPLE n/20
+· <shape> - sample, not a live signal` line above it. The label is `content`, not
+a field, so the embed is the *real* render of the real copy - a marker inside the
+embed would only prove what the marker path renders. It reads no state and takes
+a `--only <substring>` filter, so a preview can never consume a live signal's
+once-per-trade slot:
+
+```bash
+python post_samples.py --dry-run          # render all 18, send nothing
+python post_samples.py --only entry       # just the shapes matching a filter
+python post_samples.py                    # post them all
+```
+
+A webhook token allows 5 executions per 2s and 30 per minute, so the run paces at
+1.2s; an HTTP 429 reports the shape it stopped on rather than skipping it and
+leaving a shape unshown. Expect 20 messages: this is a real post to the channel.
+
+### 5d. The instrument, in both vocabularies
+
+`GC=F` is the futures feed the levels are read from; `GOLD.24-7` is what the
+broker lists. They are not the same string, and a message that named only the
+first left the reader to work out what to actually trade - while the order
+messages, which did name the broker's ticker, named it in rows rather than in
+the title a locked phone shows. So every message about a trade now carries both:
+
+```
+Asia Grab · GC=F → GOLD.24-7 · LONG ENTRY          (notify: armed / entry / result)
+```
+
+The mapping lives in exactly one place, `notify.signal_symbol_for`, next to
+`etoro_symbols()` which reads the same `ETORO_SYMBOLS` the order path orders
+from - so changing the broker's ticker for gold changes the messages with it.
+`place_orders.args_symbol_for` is now that function (it used to hold its own
+copy), which also removed the last reason for two definitions of "what is gold
+called". `traded_as()` prints one symbol, not an arrow, when the broker does not
+list the signal under a different ticker - the arrow means the two vocabularies
+differ, so it appears where they do (`GC=F → GOLD.24-7`, `EURUSD=X → EURUSD`) and
+not where they don't (a signal nobody orders, a ticker that is its own name).
+
+Three places had no ticker at all and now have one:
+
+* **`orders: declined`** - the one order message with no rows to carry the
+  instrument, so it names the ladder it stopped (`Instruments: GOLD.24-7 ·
+  EURUSD · GBPUSD · USDJPY · no orders placed`, or the IG epic when that is the
+  broker). It reads the instruments from the broker config rather than being
+  told, so a caller cannot forget.
+* **`orders: IG armed`** - the epic is now in the title
+  (`Asia Grab · CS.D.USGLD.CFD.IP · 2 ORDERS ARMED`) instead of only the footer,
+  because `2 orders armed` on its own does not say which market.
+* **`session no trade`** - the footer label was the literal string `GOLD.24-7`,
+  which the FX monitor's Tokyo session would have printed for a session of JPY
+  crosses. It is now read off the fills (`end_session.instrument_label`), so the
+  gold ladder and the FX session each name their own instruments.
+
+The style test gained a check that every trade-bearing shape names a ticker, and
+a case per shape, so a new message cannot be added without one; it also builds
+the widest footer the stack can make (a four-instrument eToro ladder that filled
+nothing, 93 of the 95 char limit) so the label cannot grow past the style
+unnoticed. 20 shapes are now checked, up from 18.
 
 ## 6. Order path
 
@@ -504,12 +636,14 @@ through the 10:00–22:00 UTC dead zone, which is what let the last bar decide w
 "now" was. The new one names the closure, then switches to `stale` once the
 market is genuinely back.
 
-The healthy armed message is field-for-field what the live channel already posts,
-with two deliberate additions that make the session visible:
+The healthy armed message carries the same levels and triggers the live channel
+posts, with the session and the flat as one line (5c):
 
 ```
-"Session": "22:00–10:00 UTC · flat by 08:00 UTC · 2026-09-09 · Globex 17:00 CT"
-footer:    "Waiting for liquidity sweep — one trade per session | last bar 22:00 UTC"
+SHORT if above: 4470.66        LONG if below: 4418.64
+NY-late range: 4450.40 / 4438.90        Last price: 4437.40
+Session: 2026-09-08 · 22:00-10:00 UTC · flat 08:00 UTC
+footer:  tape to 23:00 UTC
 ```
 
 Even the triggers line up: replaying the 22:10 UTC run on 2026-09-09 gives
@@ -946,7 +1080,11 @@ Asia Grab (staged here; your checkouts are untouched):
 | `discord_log.py` | **new** — the Discord log as data (postings, trades, FX legs) |
 | `reconcile_log.py` | **new** — the Discord log vs the same period, session by session |
 | `reconcile_timeline.py` | **new** — the whole log audited: postings, sessions, both clocks |
-| `notify.py --trigger` | **new mode** — the trade-triggered alert (section 5b) |
+| `notify.py --trigger` | **new modes** — the trade-triggered alert, and `--trigger --test` to post a labelled sample of it on demand (section 5b) |
+| `discord_style.py` | **new** — the house style, the validator, and `render()` for previews (section 5c) |
+| `test_message_style.py` | **new** — all 18 message shapes validated, plus `--show` |
+| `post_samples.py` | **new** — post one labelled sample of each shape to the channel |
+| every message builder | rewritten to the house style: `place_orders.py`, `reclaim_monitor.py`, `end_session.py`, `weekly_digest.py`, `notify.py` (section 5c) |
 | `test_reconcile_timeline.py` | **new** — 8 checks, transcript arithmetic + verdicts |
 | `smoke_workflows.py` | **new** — scheduled-command replay |
 | `test_smoke_workflows.py` | **new** — 14 tests for the harness and the gates |
@@ -970,7 +1108,8 @@ Run everything:
 ```bash
 cd asia-grab-notify-fix
 export PYTHONPATH="$HOME/Desktop/MatchForecast codes/asia-gold-reversal"
-for f in test_market_calendar test_notify_session_state test_weekly_digest test_order_path; do python $f.py; done
+for f in test_market_calendar test_notify_session_state test_weekly_digest test_order_path test_reconcile_timeline test_message_style; do python $f.py; done
+python test_message_style.py --show     # all 18 messages as Discord renders them
 python -m unittest test_smoke_workflows
 python smoke_workflows.py              # 1,512 scheduled runs, offline, ~18s
 python backtest_globex.py --detail     # cached frame; delete .cache/ to refetch

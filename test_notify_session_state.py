@@ -24,11 +24,13 @@ from types import SimpleNamespace
 import pandas as pd
 
 import notify as notify_mod
+from discord_style import problems as style_ok
 from strategy import add_atr, asia_day_ids
-from notify import (build_embed, market_blocks, reference_levels,
-                    run_trigger, session_day_id, session_ids, session_phase,
-                    session_signal, session_state, session_window, state_key,
-                    trigger_key, trigger_payload, trade_is_live)
+from notify import (build_embed, entry_embed, market_blocks, reference_levels,
+                    run_trigger, sample_trigger_payload, session_day_id,
+                    session_ids, session_phase, session_signal, session_state,
+                    session_window, state_key, trigger_key, trigger_payload,
+                    trade_is_live)
 
 
 def ts(text):
@@ -345,7 +347,9 @@ def test_between_sessions_reports_idle():
     assert state["window"] is None
     assert session_phase(state) == "idle"
     embed = build_embed(df, state, "GC=F")
-    assert "No session running" in embed["description"]
+    # `GC=F → GOLD.24-7`: the feed the levels come from, and the ticker the
+    # order goes to, because they are not the same string.
+    assert embed["title"] == "Asia Grab · GC=F → GOLD.24-7 · NO SESSION", embed["title"]
     assert "Globex day" in embed["description"]
 
 
@@ -360,9 +364,9 @@ def test_weekend_quiet_feed_is_a_market_closure_not_a_feed_fault():
     assert session_phase(state) == "market-closed"
     assert state["ref"] is None and state["trade"] is None
     embed = build_embed(df, state, "GC=F")
-    assert "Market closed" in embed["description"]
+    assert embed["title"] == "Asia Grab · GC=F → GOLD.24-7 · MARKET CLOSED", embed["title"]
     assert "weekly close" in embed["description"]
-    assert "2026-09-06 22:00" in embed["description"]
+    assert "reopens Sun 2026-09-06 22:00 UTC" in embed["description"]
 
 
 def test_broken_feed_during_an_open_market_still_reports_stale():
@@ -397,8 +401,8 @@ def test_winter_quiet_session_reports_the_globex_window():
     session_field = [f["value"] for f in build_embed(df, state, "GC=F")["fields"]
                      if f["name"] == "Session"]
     assert session_field, "armed message must carry the session window"
-    assert "23:00–11:00 UTC" in session_field[0], session_field
-    assert "Globex 17:00 CT" in session_field[0], session_field
+    assert "23:00-11:00 UTC" in session_field[0], session_field
+    assert "flat 09:00 UTC" in session_field[0], session_field
 
 
 def test_winter_session_uses_its_own_levels_and_trades():
@@ -437,7 +441,9 @@ def test_the_winter_flatten_is_0300_ct_not_a_fixed_utc_hour():
     assert trade is not None, "the fixture must produce a trade"
     assert trade["reason"] == "time", trade
     assert trade["exit_time"] == ts("2026-12-10 09:00"), trade
-    assert "flat by 09:00 UTC" in build_embed(df, state, "GC=F")["footer"]["text"]
+    session_line = {f["name"]: f["value"]
+                    for f in build_embed(df, state, "GC=F")["fields"]}["Session"]
+    assert "Flat 09:00 UTC" in session_line, session_line
 
     pinned = session_state(df, now=ts("2026-12-10 09:30"), exit_hour=8)
     assert pinned["exit_hour"] == 8
@@ -495,17 +501,19 @@ def test_trigger_names_the_trade_and_the_flat_deadline():
     key, embed = trigger_payload(state, "GC=F", last_px=float(df["Close"].iloc[-1]))
     assert key is not None and embed is not None
     fields = {f["name"]: f["value"] for f in embed["fields"]}
-    assert fields["Setup"].startswith("LONG"), fields
+    # the side and the state word are in the title, so a phone notification
+    # carries them without opening the message
+    assert embed["title"] == "Asia Grab · GC=F → GOLD.24-7 · LONG ENTRY", embed["title"]
     assert fields["Entry"] == f"{trade['entry']:.2f}"
     assert fields["Stop"] == f"{trade['sl']:.2f}"
     assert fields["Target"] == f"{trade['tp']:.2f}"
-    assert "LIVE" in fields["Status"], fields["Status"]
-    assert "08:00 UTC" in fields["Status"], fields["Status"]
-    assert "h" in fields["Status"] and "m left" in fields["Status"]
-    # the level it swept, with the buffer read back off the entry
-    assert fields["Triggered at"].startswith("89.00 - 1xATR10"), fields["Triggered at"]
-    assert str(trade["entry_time"]) == fields["Entry time (UTC)"]
-    assert "TRIGGERED" in embed["title"]
+    assert fields["Session"].startswith("Flat 08:00 UTC"), fields["Session"]
+    assert "m left" in fields["Session"], fields["Session"]
+    # the level it swept, with the ATR the entry was priced from
+    atr = abs(trade["entry"] - trade["sl"])
+    assert embed["description"] == f"NY low swept · 89.00 - 1xATR10 ({atr:.2f})", embed["description"]
+    assert "2026-09-09 01:00 UTC" in embed["footer"]["text"], embed["footer"]
+    assert style_ok(embed) == [], style_ok(embed)
 
 
 def test_trigger_is_sent_once_per_trade():
@@ -569,8 +577,9 @@ def test_a_lagging_feed_does_not_swallow_a_trigger():
     assert late["stale"] is True and late["trade"] is None
     key, embed = trigger_payload(late, "GC=F")
     assert key is not None and embed is not None
-    fields = {f["name"]: f["value"] for f in embed["fields"]}
-    assert "no longer on the feed" in fields["Triggered at"], fields
+    # the level is derived from the trade, not looked up in the session
+    # reference, so a lagging feed cannot cost the message its level line
+    assert embed["description"].startswith("NY low swept · 89.00"), embed["description"]
     assert "behind" in embed["footer"]["text"]
 
 
@@ -580,8 +589,9 @@ def test_a_finished_trade_says_it_has_finished():
     trade = session_signal(state)
     assert trade is not None and not trade_is_live(trade)
     _key, embed = trigger_payload(state, "GC=F")
-    status = {f["name"]: f["value"] for f in embed["fields"]}["Status"]
-    assert status.startswith(f"Triggered, then {trade['reason']}"), status
+    assert embed["title"].endswith(
+        f"LONG CLOSED {trade['r']:+.2f}R (target hit)"), embed["title"]
+    assert embed["color"] in (notify_mod.GREEN, notify_mod.RED), embed["color"]
 
 
 def test_a_second_entry_in_the_same_session_is_its_own_trigger():
@@ -610,6 +620,52 @@ def test_a_second_entry_in_the_same_session_is_its_own_trigger():
     assert round(level_of(a), 2) == round(level_of(b), 2) == 89.0, (level_of(a), level_of(b))
     assert abs(a["entry"] - b["entry"]) > 0.01, (a["entry"], b["entry"])
     assert trigger_key(first, a) != trigger_key(second, b)
+
+
+def test_the_channel_test_is_the_live_message_plus_a_marker():
+    """A test has to show the real layout, or it verifies nothing.
+
+    Same state, same trade: the sample and the live alert must agree on every
+    field, and differ only in the title marker and the footer note.
+    """
+    df = frame(midweek_rows())
+    state = session_state(df, now=ts("2026-09-09 09:00"))
+    last_px = float(df["Close"].iloc[-1])
+    _key, live = trigger_payload(state, "GC=F", last_px=last_px)
+    key, sample = sample_trigger_payload(state, "GC=F", last_px=last_px)
+    assert key is not None and sample is not None
+    assert sample["fields"] == live["fields"], sample["fields"]
+    assert sample["color"] == live["color"]
+    assert sample["description"] == live["description"], sample["description"]
+    assert "CLOSED" in live["title"], live["title"]
+    assert sample["title"] == live["title"] + " (TEST)", sample["title"]
+    footer = sample["footer"]["text"]
+    assert footer.startswith(live["footer"]["text"]), (footer, live["footer"])
+    assert footer.endswith("TEST - sample, not a fill"), footer
+    # its key cannot collide with the real one, and never writes
+    assert key.startswith("test|") and key != trigger_key(state, session_signal(state))
+
+
+def test_the_channel_test_works_out_of_hours_without_claiming_to_be_live():
+    """Sent between sessions, so there is no countdown to a flatten that passed."""
+    df = frame(live_rows())
+    state = session_state(df, now=ts("2026-09-12 12:00"))   # Saturday
+    assert state["window"] is None
+    _key, embed = sample_trigger_payload(state, "GC=F")
+    assert embed is not None
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    # no countdown to a flatten that has been and gone
+    assert "left" not in fields["Session"], fields["Session"]
+    # the level it swept still comes out of the tape, and the session it belongs
+    # to is named, so a test cannot be mistaken for tonight's signal
+    assert embed["description"].startswith("NY low swept · 89.00"), embed["description"]
+    assert "TEST" in embed["title"] and "TEST" in embed["footer"]["text"]
+
+
+def test_the_channel_test_says_so_when_there_is_nothing_to_sample():
+    empty = dict(window=None, trades=[], ref=None, stale=False, lag_hours=1.0,
+                 now=ts("2026-09-12 12:00"), exit_hour=8, market=None)
+    assert sample_trigger_payload(empty) == (None, None)
 
 
 def main():

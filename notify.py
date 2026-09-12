@@ -37,6 +37,14 @@ right instead of being swallowed as a duplicate.
 Unlike the armed message, the trigger does not wait for a current feed: once the
 sweep has printed, the entry is a fact about the tape and stays true however the
 feed behaves afterwards.  The message notes the lag when there is one.
+
+Because it only speaks when something has filled, the alert can go days without
+being seen - and it cannot be checked on demand, since a sweep cannot be asked
+for.  `--trigger --test` posts the same message built from the most recent entry
+the re-derivation found, marked `(TEST)`, so the layout can be verified against
+the live channel at any hour.  It reads nothing from the state file and writes
+nothing to it, so a test can never consume the real trigger's once-per-trade
+slot.
 """
 import argparse
 import json
@@ -50,6 +58,7 @@ from backtest import load_data
 from market_calendar import (SESSION_HOURS, SESSION_OPEN_HOUR,
                              closure as market_closure, next_session_open,
                              session_exit_hour, session_window, session_windows)
+import discord_style as style
 from strategy import add_atr, day_ids, find_trades, ny_levels
 
 # The session window itself (22:00-10:00 UTC in summer, 23:00-11:00 in winter)
@@ -77,6 +86,60 @@ STATE_PATH = os.path.join("results", "notify_state.json")
 TRIGGER_STATE = "triggered"
 
 GREEN, RED, BLUE, GRAY = 0x2ECC71, 0xE74C3C, 0x3498DB, 0x95A5A6
+
+# The two vocabularies, and the only place they meet.  `GC=F` is the futures
+# feed the levels are read from; `GOLD.24-7` is what the broker lists, and a
+# reader acting on a message needs the ticker their broker shows.  The eToro
+# list comes from the same env var `place_orders.py` orders from, so altering
+# the broker's ticker for gold alters the messages with it.
+SIGNAL_OF_TICKER = {"GOLD.24-7": "GC=F", "GOLD": "GC=F"}
+DEFAULT_ETORO_SYMBOLS = "GOLD.24-7,EURUSD,GBPUSD,USDJPY"
+
+
+def etoro_symbols():
+    """The instruments the eToro path orders, in its own order."""
+    return [s.strip() for s in os.environ.get(
+        "ETORO_SYMBOLS", DEFAULT_ETORO_SYMBOLS).split(",") if s.strip()]
+
+
+def signal_symbol_for(broker_symbol):
+    """The data symbol a broker ticker is traded from - `GOLD.24-7` -> `GC=F`.
+
+    Lives here rather than in `place_orders.py` because the messages need the
+    mapping in both directions and `place_orders` already imports this module;
+    two copies would be two answers to "what is gold called".
+    """
+    if broker_symbol in SIGNAL_OF_TICKER:
+        return SIGNAL_OF_TICKER[broker_symbol]
+    s = broker_symbol.upper()
+    if len(s) == 6 and s.isalpha() and "=" not in s:
+        return s + "=X"
+    return broker_symbol
+
+
+def broker_ticker(signal):
+    """What `signal` is traded as, or None when it is not in the traded list.
+
+    An FX leg is its own ticker (`EURUSD` trades as `EURUSD`), and a signal
+    nobody orders - a test run on another instrument - has no ticker to name.
+    """
+    for sym in etoro_symbols():
+        if signal_symbol_for(sym) == signal:
+            return sym
+    return None
+
+
+def traded_as(signal):
+    """`GC=F → GOLD.24-7` - the feed, then what it is actually traded as.
+
+    Both halves matter: the levels come from the futures symbol, the order goes
+    to the broker ticker.  A signal that trades under its own name is quoted
+    once, so an FX message does not read `EURUSD → EURUSD`.
+    """
+    ticker = broker_ticker(signal)
+    if ticker and ticker != signal:
+        return f"{signal} → {ticker}"
+    return signal
 
 
 def load_webhook(path=".env"):
@@ -248,40 +311,39 @@ def state_key(state):
 
 
 def build_embed(df, state, symbol):
+    """The daily message: the session as the clock finds it."""
     last_px = float(df["Close"].iloc[-1])
     last_bar = df.index[-1]
     phase = session_phase(state)
     note = market_note(state)
-    tail = f" | {note}" if note else ""
 
     if phase == "market-closed":
         found = state["market"]
         return {
-            "title": f"Asia Grab — {symbol}",
+            "title": style.title(traded_as(symbol), "MARKET CLOSED"),
             "color": GRAY,
-            "description": (f"Market closed — {found.name} ({found.kind}).\n"
-                            f"Reopens {found.until:%a %Y-%m-%d %H:%M} UTC."),
+            "description": (f"{found.name} · reopens "
+                            f"{found.until:%a %Y-%m-%d %H:%M} UTC"),
         }
 
     if phase == "stale":
         return {
-            "title": f"Asia Grab — {symbol}",
+            "title": style.title(traded_as(symbol), "FEED STALE"),
             "color": GRAY,
-            "description": ("No signal — price feed is stale.\n"
-                            f"Last bar {last_bar:%Y-%m-%d %H:%M} UTC, "
-                            f"{state['lag_hours']:.1f}h behind."),
+            "description": (f"Last bar {last_bar:%Y-%m-%d %H:%M} UTC, "
+                            f"{state['lag_hours']:.1f}h behind.\n"
+                            "Not arming from a stale level set."),
         }
 
     if phase == "idle":
         nxt = next_session_open(state["now"])
-        description = ("No session running — the Asia window is the first "
-                       f"{SESSION_HOURS}h of the Globex day, from "
-                       f"{SESSION_OPEN_HOUR:02d}:00 CT.\n"
-                       f"Next session opens {nxt:%Y-%m-%d %H:%M} UTC.")
+        description = (f"The Asia window is the first {SESSION_HOURS}h of the "
+                       f"Globex day, from {SESSION_OPEN_HOUR:02d}:00 CT.\n"
+                       f"Next session opens {nxt:%Y-%m-%d %H:%M} UTC")
         if note:
-            description += f"\n{note}."
+            description += f"\n{note}"
         return {
-            "title": f"Asia Grab — {symbol}",
+            "title": style.title(traded_as(symbol), "NO SESSION"),
             "color": GRAY,
             "description": description,
         }
@@ -290,63 +352,39 @@ def build_embed(df, state, symbol):
 
     if phase == "no-ref":
         return {
-            "title": f"Asia Grab — {symbol}",
+            "title": style.title(traded_as(symbol), "NOT ARMED"),
             "color": GRAY,
-            "description": ("Not armed — no NY-late "
-                            f"({NY_LATE[0]:02d}:00–{NY_LATE[1]:02d}:00 UTC) reference "
-                            f"for the {start:%Y-%m-%d} session.\n"
-                            f"Session runs to {end:%H:%M} UTC but has no sweep levels."),
+            "description": (f"No NY-late ({NY_LATE[0]:02d}:00-{NY_LATE[1]:02d}:00 UTC) "
+                            f"range for the {start:%Y-%m-%d} session.\n"
+                            f"It runs to {end:%H:%M} UTC with nothing to sweep."),
         }
 
     trade = state["trade"]
 
     if trade is not None:
-        if phase == "closed":
-            color = GREEN if trade["r"] > 0 else RED
-            status = f"Closed {trade['r']:+.2f}R ({trade['reason']})"
-        else:
-            color = BLUE
-            status = "Open"
-        return {
-            "title": f"Asia Grab — {symbol}",
-            "color": color,
-            "fields": [
-                {"name": "Setup", "value": ("SHORT — NY high swept"
-                                            if trade["side"] == "short"
-                                            else "LONG — NY low swept"), "inline": True},
-                {"name": "Status", "value": status, "inline": True},
-                {"name": "Entry", "value": f"{trade['entry']:.2f}", "inline": True},
-                {"name": "Stop", "value": f"{trade['sl']:.2f}", "inline": True},
-                {"name": "Target", "value": f"{trade['tp']:.2f}", "inline": True},
-                {"name": "Entry time (UTC)", "value": str(trade["entry_time"]), "inline": False},
-            ],
-            "footer": {"text": (f"buf {BUF}xATR{ATR_LEN} | TP {RR}R | "
-                                f"flat by {state['exit_hour']:02d}:00 UTC | "
-                                f"session {start:%Y-%m-%d} | last {last_px:.2f}"
-                                f"{tail}")},
-        }
+        return trade_embed(state, trade, symbol, last_px=last_px)
 
     ref = state["ref"]
     atr_now = float(df["atr"].iloc[-1])
     return {
-        "title": f"Asia Grab — {symbol} armed",
+        "title": style.title(traded_as(symbol), "ARMED"),
         "color": GRAY,
+        "description": ("One trade this session: the first sweep of the "
+                        "NY-late range fills it."),
         "fields": [
-            {"name": "SHORT trigger (sweep above)",
+            {"name": "SHORT if above",
              "value": f"{ref[0] + BUF * atr_now:.2f}", "inline": True},
-            {"name": "LONG trigger (sweep below)",
+            {"name": "LONG if below",
              "value": f"{ref[1] - BUF * atr_now:.2f}", "inline": True},
-            {"name": "NY-late high / low",
+            {"name": "NY-late range",
              "value": f"{ref[0]:.2f} / {ref[1]:.2f}", "inline": True},
             {"name": "Last price", "value": f"{last_px:.2f}", "inline": True},
-            {"name": "Session",
-             "value": (f"{start:%H:%M}–{end:%H:%M} UTC · "
-                       f"flat by {state['exit_hour']:02d}:00 UTC · "
-                       f"{start:%Y-%m-%d} · Globex {SESSION_OPEN_HOUR:02d}:00 CT"),
-             "inline": False},
+            {"name": "Session", "inline": False,
+             "value": style.rule(f"{start:%Y-%m-%d}",
+                                 f"{start:%H:%M}-{end:%H:%M} UTC",
+                                 f"flat {state['exit_hour']:02d}:00 UTC")},
         ],
-        "footer": {"text": ("Waiting for liquidity sweep — one trade per session | "
-                            f"last bar {last_bar:%H:%M} UTC{tail}")},
+        "footer": {"text": style.rule(f"tape to {last_bar:%H:%M} UTC", note)},
     }
 
 
@@ -387,6 +425,86 @@ def trade_is_live(trade):
     return trade["reason"] == "eod"
 
 
+def trade_embed(state, trade, symbol, last_px=None, alert=False, test=False):
+    """The one trade message.
+
+    The entry alert, the daily result and the channel test are the same builder
+    on purpose: a trade read at 06:00 and again at 08:10 has to look like one
+    event, not two.  `alert` only picks the state word - `ENTRY` as it fills,
+    otherwise `OPEN` or the outcome - because the title is all a phone shows.
+
+    The level is derived from the trade (`entry -/+ 1xATR10`) rather than looked
+    up in the session's reference, so the line always adds up and the message
+    never depends on the feed still holding the arming window.
+    """
+    live = trade_is_live(trade)
+    if live:
+        word = "ENTRY" if alert else "OPEN"
+        color = BLUE
+    else:
+        word = (f"CLOSED {trade['r']:+.2f}R "
+                f"({style.reason_words(trade['reason'])})")
+        color = GREEN if trade["r"] > 0 else RED
+
+    level, _atr = style.trade_level(trade)
+    window = state["window"]
+    deadline = f"Flat {state['exit_hour']:02d}:00 UTC"
+    if live and window is not None and not test:
+        flat = state["now"].normalize() + pd.Timedelta(hours=state["exit_hour"])
+        if state["now"].hour >= state["exit_hour"]:
+            flat += pd.Timedelta(days=1)
+        left = flat - state["now"]
+        if pd.Timedelta(0) < left < pd.Timedelta(hours=14):
+            deadline += (f" ({int(left.total_seconds() // 3600)}h"
+                         f"{int(left.total_seconds() % 3600 // 60):02d}m left)")
+
+    foot = []
+    if window is not None:
+        foot.append(f"session {window[0]:%Y-%m-%d}")
+    foot.append(style.stamp(trade["entry_time"]))
+    if last_px is not None:
+        foot.append(f"last {last_px:.2f}")
+    if state["stale"] and not test:
+        # A test is sent out of hours by design, so the lag line would be an
+        # artefact of when it was asked for, not a property of the trade.
+        foot.append(f"feed {state['lag_hours']:.1f}h behind")
+    if test:
+        foot.append("TEST - sample, not a fill")
+
+    return {
+        "title": style.title(
+            traded_as(symbol),
+            f"{trade['side'].upper()} {word}" + (" (TEST)" if test else "")),
+        "color": color,
+        "description": style.swept_line(trade, level),
+        "fields": [
+            {"name": "Entry", "value": f"{trade['entry']:.2f}", "inline": True},
+            {"name": "Stop", "value": f"{trade['sl']:.2f}", "inline": True},
+            {"name": "Target", "value": f"{trade['tp']:.2f}", "inline": True},
+            {"name": "Session", "inline": False,
+             "value": style.rule(deadline, f"TP {RR}R", "1 trade/session")},
+        ],
+        "footer": {"text": " · ".join(foot)},
+    }
+
+
+def entry_embed(state, trade, symbol="GC=F", last_px=None, test=False):
+    """The entry alert: the trade message as it arrives, at the entry bar."""
+    return trade_embed(state, trade, symbol, last_px=last_px, alert=True,
+                       test=test)
+
+
+def hello_embed():
+    """The webhook handshake: what lands here, and when the night is."""
+    return {
+        "title": style.title("webhook test"),
+        "color": GREEN,
+        "description": ("Armed levels, entry alerts and results land here.\n"
+                        "One message per session; the night is 22:00-10:00 UTC "
+                        "(23:00-11:00 in winter)."),
+    }
+
+
 def trigger_payload(state, symbol="GC=F", last_px=None):
     """(key, embed) for "a trade just triggered", or (None, None).
 
@@ -398,68 +516,29 @@ def trigger_payload(state, symbol="GC=F", last_px=None):
     trade = session_signal(state)
     if trade is None:
         return None, None
+    return (trigger_key(state, trade),
+            entry_embed(state, trade, symbol, last_px=last_px))
 
-    key = trigger_key(state, trade)
-    start, end = state["window"]
-    live = trade_is_live(trade)
-    ref = state["ref"]
-    swept = "NY high swept" if trade["side"] == "short" else "NY low swept"
 
-    if live:
-        status = f"LIVE — flat by {state['exit_hour']:02d}:00 UTC"
-        flat = state["now"].normalize() + pd.Timedelta(hours=state["exit_hour"])
-        if state["now"].hour >= state["exit_hour"]:
-            flat += pd.Timedelta(days=1)
-        left = flat - state["now"]
-        if pd.Timedelta(0) < left < pd.Timedelta(hours=14):
-            status += f" ({int(left.total_seconds() // 3600)}h" \
-                      f"{int(left.total_seconds() % 3600 // 60):02d}m left)"
-        color = BLUE
-    else:
-        status = f"Triggered, then {trade['reason']} {trade['r']:+.2f}R"
-        color = GREEN if trade["r"] > 0 else RED
+def sample_trigger_payload(state, symbol="GC=F", last_px=None):
+    """(key, embed) for a sample entry alert, for testing the channel.
 
-    fields = [
-        {"name": "Setup", "value": f"{trade['side'].upper()} — {swept}", "inline": True},
-        {"name": "Status", "value": status, "inline": True},
-        {"name": "Entry", "value": f"{trade['entry']:.2f}", "inline": True},
-        {"name": "Stop", "value": f"{trade['sl']:.2f}", "inline": True},
-        {"name": "Target", "value": f"{trade['tp']:.2f}", "inline": True},
-    ]
-    if ref is not None:
-        # The level and the buffer that armed this entry.  The buffer is read
-        # back off the geometry rather than off today's ATR - `entry = level
-        # +/- buf` - so the line can never disagree with the entry above it.
-        level = ref[0] if trade["side"] == "short" else ref[1]
-        buf_used = abs(trade["entry"] - level)
-        sign = "+" if trade["side"] == "short" else "-"
-        fields.append({"name": "Triggered at",
-                       "value": (f"{level:.2f} {sign} {BUF:g}xATR{ATR_LEN} "
-                                 f"{buf_used:.2f}"), "inline": False})
-    else:
-        # No reference: the feed has lagged past the arming window.  The trade
-        # is still on the tape, so it is still worth a message - just without a
-        # level line we would have to reconstruct or invent.
-        fields.append({"name": "Triggered at",
-                       "value": f"NY-late reference no longer on the feed "
-                                f"({state['lag_hours']:.1f}h behind)", "inline": False})
-    fields.append({"name": "Entry time (UTC)", "value": str(trade["entry_time"]),
-                   "inline": False})
-
-    foot = [f"buf {BUF:g}xATR{ATR_LEN}", f"TP {RR}R", "one trade per session",
-            f"session {start:%Y-%m-%d} {start:%H:%M}-{end:%H:%M} UTC"]
-    if last_px is not None:
-        foot.append(f"last {last_px:.2f}")
-    if state["stale"]:
-        foot.append(f"feed {state['lag_hours']:.1f}h behind")
-
-    embed = {
-        "title": f"Asia Grab — {symbol} TRIGGERED",
-        "color": color,
-        "fields": fields,
-        "footer": {"text": " | ".join(foot)},
-    }
-    return key, embed
+    Built from the most recent entry the re-derivation actually found, so every
+    number is real tape and the layout is the live layout; only the `(TEST)`
+    marker and the key are synthetic.  Works at any hour and on a closed market,
+    because it describes a session that has already printed rather than one that
+    is running - which is the point, since a trade may not sweep for days.
+    """
+    trades = state["trades"]
+    if not trades:
+        return None, None
+    # An entry that is still on shows the message as it arrives at the entry
+    # bar - the common case when this is run inside a session.
+    still_on = [t for t in trades if trade_is_live(t)]
+    trade = still_on[-1] if still_on else trades[-1]
+    key = (f"test|{trade['side']}|{trade['entry_time'].isoformat()}"
+           f"|{trade['entry']:.2f}")
+    return key, entry_embed(state, trade, symbol, last_px=last_px, test=True)
 
 
 def run_trigger(state, symbol, webhook, state_path=STATE_PATH, force=False,
@@ -516,7 +595,11 @@ def remember(name, value, path=STATE_PATH, **extra):
 def main():
     p = argparse.ArgumentParser(description="Send daily Asia-grab signal to Discord")
     p.add_argument("--symbol", default="GC=F")
-    p.add_argument("--test", action="store_true")
+    p.add_argument("--test", action="store_true",
+                   help=("with --trigger: post a sample entry alert built from "
+                         "the most recent real entry, labelled as a test and "
+                         "without touching the state file; alone: the webhook "
+                         "hello"))
     p.add_argument("--force", action="store_true",
                    help="post even if this exact session state was already posted")
     p.add_argument("--no-state", action="store_true",
@@ -543,9 +626,8 @@ def main():
     if not webhook and not args.dry_run:
         raise SystemExit("No webhook found. Put DISCORD_WEBHOOK=... in .env")
 
-    if args.test:
-        status = send(webhook, {"title": "Asia Grab online", "color": GREEN,
-                                "description": "Webhook test — daily signals will land here."})
+    if args.test and not args.trigger:
+        status = send(webhook, hello_embed())
         print(f"Test sent, HTTP {status}")
         return
 
@@ -557,6 +639,23 @@ def main():
     add_atr(df, ATR_LEN)
     state = session_state(df, max_lag_hours=args.max_lag_hours,
                           exit_hour=args.exit_hour)
+
+    if args.trigger and args.test:
+        # The channel test: post the entry alert now, whatever the clock says.
+        # Nothing is written, so it cannot consume the real trigger's slot.
+        key, embed = sample_trigger_payload(
+            state, args.symbol, last_px=float(df["Close"].iloc[-1]))
+        if key is None:
+            print("Trigger test: no entry in the loaded window to sample "
+                  "- nothing sent")
+            return
+        if args.dry_run:
+            print(f"DRY RUN (TEST) — {key}")
+            print(json.dumps(embed, indent=2, default=str))
+            return
+        status = send(webhook, embed)
+        print(f"Trigger test sent, HTTP {status} - {key}")
+        return
 
     if args.trigger:
         key, embed, _sent = run_trigger(

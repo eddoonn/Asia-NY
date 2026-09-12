@@ -28,6 +28,7 @@ from collections import Counter
 
 import pandas as pd
 
+import discord_style as style
 from backtest import load_data
 from market_calendar import (SESSION_HOURS, SESSION_OPEN_HOUR, session_exit_hour,
                              to_ct, week_sessions)
@@ -35,7 +36,8 @@ from market_calendar import closure as market_closure
 from market_calendar import closures_between
 from notify import (ATR_LEN, ATR_MULT, BUF, COST, GRAY, GREEN, NY_LATE, RED, RR,
                     STATE_PATH, load_state, load_webhook, reference_levels,
-                    remember, send, session_ids)
+                    remember, send, session_ids, traded_as)
+from discord_style import reason_words
 from strategy import add_atr, find_trades, ny_levels
 
 SAMPLE = pd.Timedelta(minutes=30)
@@ -128,8 +130,11 @@ def summarise(reports):
 
 
 def _describe_session(report):
-    # Labelled by its trade date - the day the session's daytime half falls on,
-    # which is the exchange's own convention and what the Discord alerts show.
+    """One line per session, in the same words the daily alerts use.
+
+    Labelled by its trade date - the day the session's daytime half falls on,
+    which is the exchange's own convention and what the Discord alerts show.
+    """
     when = f"{report['trade_date']:%a %m-%d}"
     status = report["status"]
     if status == "trade":
@@ -137,35 +142,41 @@ def _describe_session(report):
         entry = f"{trade['entry_time']:%H:%M}"
         if trade["entry_time"].date() != report["trade_date"]:
             entry = f"{trade['entry_time']:%m-%d %H:%M}"
-        return (f"`{when}` {trade['side'].upper()} {entry} "
-                f"→ {trade['r']:+.2f}R ({trade['reason']})")
+        return (f"`{when}` {trade['side'].upper()} {entry} · "
+                f"{trade['r']:+.2f}R ({reason_words(trade['reason'])})")
     if status == "no-sweep":
         ref = report["ref"]
-        return f"`{when}` no sweep — levels {ref[0]:.2f} / {ref[1]:.2f}"
+        return f"`{when}` no sweep · range {ref[0]:.2f} / {ref[1]:.2f}"
     if status == "no-levels":
-        return f"`{when}` no trade — no NY-late levels for the session"
+        return f"`{when}` not armed · no NY-late range to sweep"
     if status == "no-data":
         if report["bars"] == 0 and report["neighbour_bars"] == 0:
-            return (f"`{when}` no trade — no price data, and the feed is silent "
-                    f"either side (check the calendar)")
-        return f"`{when}` no trade — no price data for the session"
-    return f"`{when}` market closed — {report['closure']}"
+            return (f"`{when}` no data · feed silent either side "
+                    f"(check the calendar)")
+        return f"`{when}` no data for the session"
+    return f"`{when}` market closed · {report['closure']}"
 
 
 def build_digest_embed(week_start, week_end, reports, symbol, now=None):
     counts, traded, net = summarise(reports)
     total = len(reports)
-    summary = (f"{total} sessions · {counts['trade']} traded · "
-               f"{counts['no-sweep']} no sweep · {counts['no-levels']} no levels · "
-               f"{counts['closed']} closed · {counts['no-data']} no data")
-    if traded:
-        summary += f" · net {net:+.2f}R"
+    # Only the categories that happened: a week with no holidays should not
+    # spend a line saying there were no holidays.
+    headline = [f"{total} sessions"]
+    if counts["trade"]:
+        headline.append(f"{counts['trade']} traded")
+        headline.append(f"net {net:+.2f}R")
+    for key, label in (("no-sweep", "no sweep"), ("no-levels", "not armed"),
+                       ("closed", "closed"), ("no-data", "no data")):
+        if counts[key]:
+            headline.append(f"{counts[key]} {label}")
 
     lines = [_describe_session(r) for r in reports]
-    description = f"`{summary}`\n\n" + "\n".join(lines)
+    description = "`" + " · ".join(headline) + "`\n" + "\n".join(lines)
 
     embed = {
-        "title": f"Asia Grab — weekly digest ({week_start:%b %d} – {week_end:%b %d})",
+        "title": style.title("weekly digest",
+                            f"{week_start:%b %d}-{week_end:%b %d}"),
         "color": GREEN if net > 0 else (RED if net < 0 else GRAY),
         "description": description,
     }
@@ -174,17 +185,15 @@ def build_digest_embed(week_start, week_end, reports, symbol, now=None):
     if holidays:
         embed["fields"] = [{
             "name": "Market closures",
-            "value": "\n".join(f"{name} — {start:%a %H:%M} to {end:%a %H:%M} UTC"
+            "value": "\n".join(f"{name}: {start:%a %H:%M} to {end:%a %H:%M} UTC"
                                for start, end, name in holidays)[:1024],
             "inline": False,
         }]
 
-    gaps = [r for r in reports if r["status"] == "no-data"]
-    footer = (f"sessions {SESSION_HOURS}h from the {SESSION_OPEN_HOUR:02d}:00 CT "
-              f"Globex open · {symbol} · risk {RR}R targets")
-    if gaps:
-        footer += f" · {len(gaps)} session(s) with no data"
-    embed["footer"] = {"text": footer}
+    embed["footer"] = {"text": style.rule(
+        traded_as(symbol),
+        f"sessions {SESSION_HOURS}h from the {SESSION_OPEN_HOUR:02d}:00 CT open",
+        f"TP {RR}R")}
     return embed, {"net_r": round(net, 2), "counts": dict(counts),
                    "week_end": week_end.isoformat()}
 

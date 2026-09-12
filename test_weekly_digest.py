@@ -7,6 +7,7 @@ market closure and the other four cover every other classification.
 """
 import pandas as pd
 
+from discord_style import problems as style_ok
 from market_calendar import week_sessions
 from strategy import add_atr
 from weekly_digest import (build_digest_embed, session_reports, summarise)
@@ -157,7 +158,7 @@ def test_no_data_session_is_a_feed_gap_when_the_rest_of_the_day_has_bars():
     assert gap["neighbour_bars"] > 0, "the fixture keeps that day's earlier bars"
     from weekly_digest import _describe_session
     line = _describe_session(gap)
-    assert "no price data" in line
+    assert "no data" in line
     assert "silent either side" not in line, line
 
 
@@ -168,7 +169,7 @@ def test_no_data_wording_separates_a_gap_from_a_silent_feed():
     assert "silent either side" in _describe_session(base)
     fed = dict(base, neighbour_bars=2)
     line = _describe_session(fed)
-    assert "no price data" in line and "silent either side" not in line, line
+    assert "no data" in line and "silent either side" not in line, line
 
 
 def test_summary_counts_and_net_match_the_reports():
@@ -187,12 +188,14 @@ def test_digest_embed_lists_sessions_and_closures():
     # Sessions are labelled by trade date, the day their daytime half falls on.
     for label in ("Mon 03-30", "Tue 03-31", "Wed 04-01", "Thu 04-02", "Fri 04-03"):
         assert label in text, label
-    assert "market closed — Good Friday" in text
-    assert "no sweep — levels" in text
-    assert "no NY-late levels" in text
-    assert "no price data" in text
+    assert "market closed · Good Friday" in text
+    assert "no sweep · range" in text
+    assert "not armed · no NY-late range" in text
+    assert "no data" in text
     assert "5 sessions" in text
-    assert embed["title"].endswith("(Mar 29 – Apr 03)")
+    assert embed["title"] == "Asia Grab · weekly digest · Mar 29-Apr 03", embed["title"]
+    # the digest's description is a session list, so it is allowed more lines
+    assert style_ok(embed, max_lines=12) == [], style_ok(embed, max_lines=12)
     assert info["week_end"] == week_end.isoformat()
     assert info["counts"]["closed"] == 1
     assert embed["fields"][0]["name"] == "Market closures"

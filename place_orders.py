@@ -3,10 +3,13 @@ import os
 
 import pandas as pd
 
+import discord_style as style
+
 from backtest import load_data
 from config import load_env
 from market_calendar import closure, is_open, session_window, to_ct
-from notify import load_webhook, reference_levels, send
+from notify import (etoro_symbols, load_webhook, reference_levels, send,
+                    signal_symbol_for)
 from strategy import add_atr, ny_levels
 
 # Which session is running is asked of the calendar, never inferred from the
@@ -17,7 +20,6 @@ BUF = 1.0
 ATR_MULT = 1.0
 ATR_LEN = 10
 RR = 0.75
-GREEN, BLUE, GRAY = 0x2ECC71, 0x3498DB, 0x95A5A6
 
 
 class NoSession(RuntimeError):
@@ -115,24 +117,44 @@ def parse_as_of(value):
     return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
 
 
+def declined_instruments():
+    """What a decline applies to, as the ticker the broker lists.
+
+    A decline is the one order message with no rows to carry the instrument, so
+    it has to name them itself: "no orders tonight" without a ticker leaves the
+    reader unable to tell which ladder was skipped.
+    """
+    if os.environ.get("BROKER", "ig") == "etoro":
+        return etoro_symbols()
+    return [os.environ.get("IG_EPIC", "CS.D.USGLD.CFD.IP")]
+
+
+def declined_embed(message, instruments=None):
+    """"No orders tonight" - a reason, and the instruments it applies to."""
+    if instruments is None:
+        instruments = declined_instruments()
+    embed = {"title": style.title("no orders tonight"),
+             "color": style.GRAY, "description": message}
+    if instruments:
+        embed["fields"] = [{"name": "Instruments", "inline": False,
+                            "value": style.rule(*instruments,
+                                                "no orders placed")}]
+    return embed
+
+
 def _decline(message, dry=False):
     print(f"No orders tonight - {message}")
     if dry:
         print(f"DRYRUN BLOCKED {message}")
     hook = None if dry else load_webhook()
     if hook:
-        send(hook, {"title": "No orders tonight", "color": GRAY,
-                    "description": message})
+        send(hook, declined_embed(message))
 
 
-def args_symbol_for(etoro_symbol):
-    mapping = {"GOLD.24-7": "GC=F", "GOLD": "GC=F"}
-    if etoro_symbol in mapping:
-        return mapping[etoro_symbol]
-    s = etoro_symbol.upper()
-    if len(s) == 6 and s.isalpha() and "=" not in s:
-        return s + "=X"
-    return etoro_symbol
+# The broker-ticker mapping lives in `notify.py`, which this module already
+# imports: the messages and the orders have to answer "what is gold called"
+# identically, and one definition is how that stays true.
+args_symbol_for = signal_symbol_for
 
 
 def fx_quote_is_jpy(symbol):
@@ -144,8 +166,7 @@ def run_etoro(account, risk_pct, dry, now=None):
     from etoro_client import EtoroClient
 
     now = now if now is not None else pd.Timestamp.now(tz="UTC")
-    symbols = [s.strip() for s in os.environ.get(
-        "ETORO_SYMBOLS", "GOLD.24-7,EURUSD,GBPUSD,USDJPY").split(",") if s.strip()]
+    symbols = etoro_symbols()
     mode = os.environ.get("RISK_MODE", "split")
     risk_total = account * risk_pct / 100.0
     per_risk = risk_total / len(symbols) if mode == "split" else risk_total
@@ -225,22 +246,33 @@ def run_etoro(account, risk_pct, dry, now=None):
 
     hook = load_webhook()
     if hook:
-        session = "no session" if window is None else f"session {window[0]:%H:%M}-{window[1]:%H:%M} UTC"
-        fields = [{"name": sym, "value": desc, "inline": False} for sym, desc in lines]
-        fields.append({"name": "Risk",
-                       "value": f"{per_risk:,.2f} USD per instrument × {len(symbols)} "
-                                f"= {per_risk * len(symbols):,.2f} USD total ({risk_pct}% of account, {mode})",
-                       "inline": False})
-        fields.append({"name": "Next message",
-                       "value": "Session result with exact P&L per instrument in $ and R (~03:05 CT)",
-                       "inline": False})
-        send(hook, {"title": f"Orders placed - {len(all_orders) // 2}/{len(symbols)} instruments armed",
-                    "color": BLUE,
-                    "description": ("Asia sweep traps resting on eToro. Whichever level is touched first fills; "
-                                    "the sibling cancels at session end."),
-                    "fields": fields,
-                    "footer": {"text": f"eToro {os.environ.get('ETORO_MODE', 'demo')} · {session} · "
-                                       f"flat 03:00 CT"}})
+        session = ("no session" if window is None
+                   else f"session {window[0]:%m-%d %H:%M}-{window[1]:%H:%M} UTC")
+        send(hook, etoro_orders_embed(lines, per_risk, len(symbols), risk_pct,
+                                      mode, session, len(all_orders) // 2))
+
+
+def etoro_orders_embed(lines, per_risk, instruments, risk_pct, mode, session,
+                       armed):
+    """"n/m orders armed": the levels each instrument rests at, and the risk."""
+    fields = [{"name": sym, "value": desc, "inline": False}
+              for sym, desc in lines]
+    fields.append({"name": "Risk",
+                   "value": (f"{per_risk:,.2f} USD per instrument · {instruments} "
+                             f"instruments = {per_risk * instruments:,.2f} USD "
+                             f"({risk_pct}% of account, {mode})"),
+                   "inline": False})
+    return {
+        "title": style.title(f"{armed}/{instruments} orders armed"),
+        "color": style.BLUE,
+        "description": ("A stop order either side of the NY-late range, per "
+                        "instrument.\nWhichever fills first cancels its sibling at "
+                        "the session end; the result follows after the flatten."),
+        "fields": fields,
+        "footer": {"text": style.rule(
+            f"eToro {os.environ.get('ETORO_MODE', 'demo')}", session,
+            "flat 03:00 CT")},
+    }
 
 
 def run_ig(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct, dry):
@@ -276,12 +308,30 @@ def run_ig(short_level, long_level, stop_dist, limit_dist, risk_amount, risk_pct
 
     hook = load_webhook()
     if hook:
-        fields = [{"name": f"{d} STOP", "value": f"{lv:.2f} (SL {stop_dist:.1f} / TP {limit_dist:.1f} pts, size {size})",
-                   "inline": True} for d, lv, _ in results]
-        send(hook, {"title": "IG orders placed - Asia Grab", "color": GREEN,
-                    "fields": fields,
-                    "footer": {"text": f"{epic} | risk {risk_pct}% = {risk_amount:.0f} {currency} "
-                                       f"| flat 03:00 CT"}})
+        send(hook, ig_orders_embed(results, size, currency, stop_dist,
+                                   limit_dist, epic, risk_pct, risk_amount))
+
+
+def ig_orders_embed(results, size, currency, stop_dist, limit_dist, epic,
+                    risk_pct, risk_amount):
+    """The IG variant of the same message: levels, sizes, and the risk."""
+    fields = [{"name": f"{d} STOP",
+               "value": (f"{lv:.2f}\nSL {stop_dist:.1f} / TP {limit_dist:.1f} pts · "
+                         f"{size} {currency}"),
+               "inline": True} for d, lv, _ in results]
+    return {
+        # The epic is in the title because a locked phone shows only that, and
+        # `2 orders armed` alone does not say which market they rest in.
+        "title": style.title(epic, f"{len(fields)} ORDERS ARMED"),
+        "color": style.GREEN,
+        "description": ("Stop orders either side of the NY-late range.\n"
+                        "Whichever fills first cancels its sibling at the "
+                        "session end."),
+        "fields": fields,
+        "footer": {"text": style.rule(
+            "IG", f"risk {risk_pct}% = {risk_amount:.0f} {currency}",
+            "flat 03:00 CT")},
+    }
 
 
 if __name__ == "__main__":

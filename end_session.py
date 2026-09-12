@@ -3,11 +3,12 @@ import os
 
 import pandas as pd
 
+import discord_style as style
+
 from config import load_env
 from market_calendar import (closure, is_open, london_exit_hour, session_exit_hour,
                             session_window)
 from notify import load_webhook, send
-GRAY, BLUE = 0x95A5A6, 0x3498DB
 
 # Both flats come from the calendar, expressed in CT: the Asia session at
 # 03:00 CT (08:00 UTC on CDT, 09:00 on CST) and London at 12:00 CT (17:00 UTC on
@@ -241,30 +242,74 @@ def run_etoro(dry, profile=None):
     if not hook:
         return
     now = pd.Timestamp.now(tz="UTC")
-    seg = (f"GOLD.24-7 · eToro {os.environ.get('ETORO_MODE', 'demo')} · "
-           f"risk {risk_amount:,.0f} USD/trade · {describe_schedule(now)}")
+    seg = style.rule(instrument_label(results), f"eToro {os.environ.get('ETORO_MODE', 'demo')}",
+                     f"risk {risk_amount:,.0f} USD/trade",
+                     f"tokyo flat {flat_hour('tokyo', now):02d}:00 UTC")
     if trades:
-        win = total_pnl > 0
-        title = f"SESSION RESULT — {'WIN' if win else 'LOSS'}  {total_pnl:+,.2f} USD  ({total_r:+.2f}R)"
-        fields = []
-        for t in trades:
-            line = (f"Entry {t.get('open_rate', 0):,.2f} → Exit {t.get('exit_rate', 0):,.2f}\n"
-                    f"P&L **{t['pnl']:+,.2f} USD** ({t['r']:+.2f}R) · {t.get('reason', '')}")
-            if t.get("open_ts") and t.get("close_ts"):
-                line += f"\n{t['open_ts'][11:16]} → {t['close_ts'][11:16]} UTC"
-            fields.append({"name": f"{t.get('symbol', '')} {t['side']}", "value": line, "inline": False})
-        for n in no_fills:
-            fields.append({"name": f"{n.get('symbol', '')} {n['side']} order",
-                           "value": "Never triggered — cancelled, no loss", "inline": False})
-        for e in errors:
-            fields.append({"name": "Attention", "value": e["error"], "inline": False})
-        send(hook, {"title": title, "color": 0x00C853 if win else 0xFF1744,
-                    "description": "**Asia Grab session closed.**",
-                    "fields": fields, "footer": {"text": seg}})
+        send(hook, result_embed(trades, no_fills, errors, total_pnl, total_r,
+                               total_pnl > 0, seg))
     else:
-        send(hook, {"title": "SESSION RESULT — NO TRADE", "color": GRAY,
-                    "description": "Price never swept either level. Orders cancelled, capital untouched.",
-                    "footer": {"text": seg}})
+        send(hook, no_trade_embed(seg))
+
+
+def instrument_label(results, fallback="GOLD.24-7"):
+    """The tickers this session actually touched, in the order it touched them.
+
+    Read off the results rather than hardcoded: the same script closes the FX
+    monitor's Tokyo session of JPY crosses, and a footer that named gold for it
+    would be a lie.  The fallback only applies to a session with no fills at
+    all, when the caller's own default is the honest answer.
+    """
+    seen = []
+    for r in results:
+        sym = (r or {}).get("symbol")
+        if sym and sym not in seen:
+            seen.append(sym)
+    return " · ".join(seen) if seen else fallback
+
+
+def result_embed(trades, no_fills, errors, total_pnl, total_r, win, seg):
+    """The session result: the headline in the title, one field per trade."""
+    fields = []
+    for t in trades:
+        line = (f"Entry {t.get('open_rate', 0):,.2f} → Exit {t.get('exit_rate', 0):,.2f}\n"
+                f"P&L **{t['pnl']:+,.2f} USD** ({t['r']:+.2f}R) · "
+                f"{style.reason_words(t.get('reason', ''))}")
+        if t.get("open_ts") and t.get("close_ts"):
+            line += f"\n{t['open_ts'][11:16]} → {t['close_ts'][11:16]} UTC"
+        fields.append({"name": f"{t.get('symbol', '')} {t['side']}",
+                       "value": line, "inline": False})
+    for n in no_fills:
+        fields.append({"name": f"{n.get('symbol', '')} {n['side']} order",
+                       "value": "Never triggered · cancelled, no loss",
+                       "inline": False})
+    for e in errors:
+        fields.append({"name": "Error", "value": e["error"], "inline": False})
+
+    description = f"{len(trades)} position(s) closed"
+    if no_fills:
+        description += f" · {len(no_fills)} never filled"
+    return {
+        "title": style.title(f"result {total_pnl:+,.2f} USD ({total_r:+.2f}R)"),
+        "color": style.GREEN if win else style.RED,
+        "description": description,
+        "fields": fields,
+        "footer": {"text": seg},
+    }
+
+
+def no_trade_embed(seg):
+    return {"title": style.title("no trade this session"), "color": style.GRAY,
+            "description": ("Neither level was swept.\n"
+                            "Orders cancelled, capital untouched."),
+            "footer": {"text": seg}}
+
+
+def cleanup_embed(cancelled, closed, epic):
+    return {"title": style.title("session end"),
+            "color": style.BLUE if (cancelled or closed) else style.GRAY,
+            "description": (f"{len(cancelled)} order(s) cancelled, "
+                            f"{len(closed)} position(s) closed on {epic}.")}
 
 
 def run_ig(dry):
@@ -301,8 +346,7 @@ def run_ig(dry):
 
     hook = load_webhook()
     if hook:
-        send(hook, {"title": "Session end — cleanup", "color": BLUE if (cancelled or closed) else GRAY,
-                    "description": f"Cancelled {len(cancelled)} order(s), closed {len(closed)} position(s) on {epic}."})
+        send(hook, cleanup_embed(cancelled, closed, epic))
 
 
 if __name__ == "__main__":

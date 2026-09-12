@@ -2,6 +2,8 @@ import json
 import os
 from datetime import datetime, timezone
 
+import discord_style as style
+
 import pandas as pd
 
 from backtest import load_data
@@ -34,7 +36,6 @@ PROFILES = [
                ("USDJPY", "USDJPY=X")]},
 ]
 STATE = "results/reclaim_session.json"
-BLUE, GRAY = 0x3498DB, 0x95A5A6
 
 
 def resolve_window(value, day=None):
@@ -163,8 +164,29 @@ def check_signal(client, profile, name, sym, risk, now, state, dry):
             "side": side, "entry": bar_c, "sl": sl, "tp": tp}
 
 
+def sweep_embed(signals, risk):
+    """The "n entries opened" message: one field per leg, profile named."""
+    opened = [o for o in signals if not o.get("dry")]
+    fields = [{"name": f"{o['profile']} · {o['symbol']} {o['side'].upper()}",
+               "inline": True,
+               "value": f"entry {o['entry']:.4f}\nSL {o['sl']:.4f} · TP {o['tp']:.4f}"}
+              for o in opened]
+    names = sorted({o["profile"] for o in opened})
+    windows = " · ".join(
+        f"{p['name']} {profile_windows(p)[0][0]:02d}-{profile_windows(p)[0][1]:02d} UTC"
+        for p in PROFILES if p["name"] in names)
+    return {
+        "title": style.title(f"{len(fields)} entries opened"),
+        "color": style.BLUE,
+        "description": "Sweep and reclaim confirmed on the hourly close.",
+        "fields": fields,
+        "footer": {"text": style.rule(windows, f"risk {risk:.0f}/trade")},
+    }
+
+
 def main():
     import argparse
+
     p = argparse.ArgumentParser(description="Hourly sweep-reclaim monitor (Tokyo + London)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true", help="bypass session-window check (testing)")
@@ -226,17 +248,7 @@ def main():
     if signals:
         os.makedirs("results", exist_ok=True)
         json.dump(state, open(STATE, "w"), indent=1, default=str)
-        fields = [{"name": f"[{o['profile']}] {o['symbol']} {o['side'].upper()}", "inline": True,
-                   "value": f"entry {o['entry']:.4f}\nSL {o['sl']:.4f} · TP {o['tp']:.4f}"}
-                  for o in signals if not o.get("dry")]
-        names = sorted({o["profile"] for o in signals if not o.get("dry")})
-        windows = " · ".join(
-            f"{p['name']} {profile_windows(p)[0][0]:02d}-{profile_windows(p)[0][1]:02d} UTC"
-            for p in PROFILES if p["name"] in names)
-        send(load_webhook(), {"title": f"Sweep Reclaim - {len(fields)} trade(s) opened",
-                              "color": BLUE, "fields": fields,
-                              "footer": {"text": f"sweep + reclaim confirmed on hourly close "
-                                                 f"· {windows} · risk {risk:.0f}/trade"}})
+        send(load_webhook(), sweep_embed(signals, risk))
 
 
 if __name__ == "__main__":
