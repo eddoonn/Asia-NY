@@ -780,12 +780,19 @@ before the open and becomes five.
 
 ### Also visible in the log, not yet acted on
 
-* **The duplicates date the second dispatcher.** Not one posting is doubled
-  before 2026-09-03, and every one after it is. The trigger is the
-  `2026-09-02 22:22` post - *"Asia Grab online / Webhook test - daily signals
-  will land here"* - from a second app. Two dispatchers, one signal stream, which
-  is the same class of problem as the double-entry in 7e and the reason the paste
-  looked like it contained duplicates.
+* **The duplicates date the second webhook app, not a second repository.** The
+  log's 19 armed postings are single up to and including 2026-09-02 and paired
+  from `2026-09-03 01:06` on - 7 single, then 12 paired (`discord_log.ARMED`
+  carries the count, `FIRST_DUPLICATE` pins the boundary). Immediately before it
+  sits the `2026-09-02 22:22` post - *"Asia Grab online / Webhook test - daily
+  signals will land here"* - from a second app. The monitor's own `Sweep Reclaim`
+  postings straddle the same boundary without pairing (1 before, 4 after), so
+  what is doubled is the daily-signal delivery, not the strategy. It is not two
+  repositories either: both local checkouts push to `eddoonn/Asia-NY`, and the
+  repository named `asia-gold-reversal` is a rename to `asia-gold-reversal-OLD`
+  (section 9a). Two dispatchers, one signal stream, which is the same class of
+  problem as the double-entry in 7e and the reason the paste looked like it
+  contained duplicates.
 * **Five FX postings ride along in the same channel** (`Sweep Reclaim - n trades
   opened`): 2026-09-02 AUDJPY, 09-03 EURUSD + USDJPY, 09-04 GBPJPY, 09-07
   EURUSD, 09-09 USDJPY + EURJPY + GBPJPY. Eight legs on the `scalp-agent`
@@ -910,10 +917,20 @@ Then, in `.github/workflows`:
 - cron: '0 9 * * 6'    # Saturday 09:00 UTC: weekly digest
 ```
 
-Only one copy of `notify.py` should be live. It is byte-identical in
-`eddoonn/Asia-NY` and `eddoonn/asia-gold-reversal`, and both repositories carry
-the same `.github/workflows/discord-notify.yml` (22:10 and 08:10 UTC) — that pair
-is why every alert is posted twice.
+Only one copy of `notify.py` should be live, and there is only one: both local
+checkouts point at `https://github.com/eddoonn/Asia-NY` (the folder named
+`asia-gold-reversal` pushes there too), so that is one repository with one
+`.github/workflows/discord-notify.yml` (22:10 and 08:10 UTC).
+`eddoonn/asia-gold-reversal` is a *rename*, not a second live repo - it redirects
+to `eddoonn/asia-gold-reversal-OLD`.
+
+**The doubled alerts come from a second webhook app, not a second repository.**
+That renamed repo's workflow was committed `2026-08-27 00:29 +0100`, so if its
+schedule were the second dispatcher the pairing would have started on 08-27; the
+log shows it starting six days later, on the first posting after the
+`2026-09-02 22:22` *"Asia Grab online / Webhook test"* registration (7c). Nothing
+in git is duplicated, so the fix belongs at the webhook end - retiring the second
+integration - and not in the repository.
 
 ## 9b. Files in this drop-in
 

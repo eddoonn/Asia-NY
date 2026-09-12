@@ -51,13 +51,22 @@ def test_every_trade_level_is_a_level_the_channel_quoted():
 
 
 def test_the_duplicates_start_where_the_second_dispatcher_registered():
-    """One posting before the switch, none of them afterwards - that is the bug."""
+    """Every armed posting before the switch is single, every one after is paired."""
     singles = [p["at"] for p in ARMED if p["copies"] == 1]
     doubles = [p["at"] for p in ARMED if p["copies"] == 2]
+    assert len(singles) == 7 and len(doubles) == 12, (len(singles), len(doubles))
     assert max(singles) < FIRST_DUPLICATE, max(singles)
     assert min(doubles) == FIRST_DUPLICATE, min(doubles)
     assert NOTES[0]["text"].startswith("Asia Grab online")
     assert NOTES[0]["at"][:10] < FIRST_DUPLICATE[:10]
+
+    # What doubled is the daily-signal delivery, not the monitor: the FX
+    # postings straddle the same boundary without pairing.  A second *repository*
+    # running the whole workflow would have doubled these too, and the two
+    # checkouts actually push to one remote (PATCH_NOTES 9a).
+    before = sum(1 for s in SWEEPS if s["at"] < FIRST_DUPLICATE)
+    after = sum(1 for s in SWEEPS if s["at"] > FIRST_DUPLICATE)
+    assert (before, after) == (1, 4), (before, after)
 
 
 def test_the_transcript_covers_the_period_it_claims():
