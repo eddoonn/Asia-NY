@@ -1,9 +1,47 @@
 import argparse
 import os
 
+import pandas as pd
+
 from config import load_env
+from market_calendar import (closure, is_open, london_exit_hour, session_exit_hour,
+                            session_window)
 from notify import load_webhook, send
 GRAY, BLUE = 0x95A5A6, 0x3498DB
+
+# Both flats come from the calendar, expressed in CT: the Asia session at
+# 03:00 CT (08:00 UTC on CDT, 09:00 on CST) and London at 12:00 CT (17:00 UTC on
+# CDT, 18:00 on CST). So the workflow no longer hardcodes "08", and neither
+# flatten is a summer value applied all year.
+CLEANUP_HOURS = 2          # how long after the flat the cleanup cron keeps firing
+
+
+def flat_hour(profile, now=None):
+    """UTC hour this profile's session is flattened at."""
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    return london_exit_hour(now) if profile == "london" else session_exit_hour(now)
+
+
+def which_profile(now=None):
+    """'tokyo' inside the Asia cleanup window, else 'london'.
+
+    The scheduled job fires hourly, so the profile whose flat has just passed
+    owns the cleanup. The Asia flat is 08:00 UTC on CDT and 09:00 on CST, which
+    is why testing the hour against a constant cannot work.
+    """
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    flat = session_exit_hour(now)
+    return "tokyo" if flat <= now.hour < flat + CLEANUP_HOURS else "london"
+
+
+def describe_schedule(now=None):
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    window = session_window(now)
+    parts = [f"tokyo flat {session_exit_hour(now):02d}:00 UTC",
+             f"london flat {london_exit_hour(now):02d}:00 UTC"]
+    if window is not None:
+        parts.append(f"session {window[0]:%Y-%m-%d %H:%M} -> {window[1]:%H:%M} UTC")
+    return " · ".join(parts)
 
 
 def main():
@@ -12,7 +50,37 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--profile", choices=["tokyo", "london"], default=None,
                    help="only clean up orders for this profile (leaves other profile orders untouched)")
+    p.add_argument("--auto", action="store_true",
+                   help="pick the profile from the market calendar (Asia flat is 08:00 UTC on "
+                        "CDT and 09:00 on CST, London's is 17:00 UTC)")
+    p.add_argument("--which-profile", action="store_true",
+                   help="print the profile whose session is being flattened now, then exit")
+    p.add_argument("--as-of", default=None,
+                   help="pin the clock to this UTC timestamp (ISO-8601); for tests/backfill")
     args = p.parse_args()
+
+    now = pd.Timestamp.now(tz="UTC") if not args.as_of else pd.Timestamp(args.as_of)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    if args.which_profile:
+        print(which_profile(now))
+        return
+
+    # Nothing to flatten against a shut book, and the broker would reject the
+    # cancels anyway.  The every-hourly cron fires on weekends and through the
+    # Friday-evening close, so this is the guard that keeps it quiet.
+    block = closure(now)
+    if block is not None:
+        print(f"Market closed - {block.name}, reopens {block.until:%Y-%m-%d %H:%M} UTC. "
+              f"Nothing to flatten.")
+        print(f"DRYRUN BLOCKED market closed - {block.name}")
+        return
+    if args.auto and args.profile is None:
+        args.profile = which_profile(now)
+        print(f"Auto-selected profile: {args.profile} ({describe_schedule(now)})")
+    elif args.profile is None and args.broker == "etoro":
+        print(f"Note: no --profile/--auto given, cleaning up every profile "
+              f"({describe_schedule(now)})")
 
     load_env()
     if args.broker == "etoro":
@@ -48,7 +116,8 @@ def run_etoro(dry, profile=None):
     if profile:
         filt = [o for o in orders if o.get("profile") == profile]
         kept = [o for o in orders if o.get("profile") != profile]
-        # legacy orders (from place_orders) have no profile — treat as tokyo for 08:05 cleanup
+        # legacy orders (from place_orders) have no profile — they are the Asia
+        # session's, so the tokyo cleanup owns them
         if profile == "tokyo":
             legacy = [o for o in orders if not o.get("profile")]
             filt.extend(legacy)
@@ -66,6 +135,9 @@ def run_etoro(dry, profile=None):
     if dry:
         print(f"DRY RUN — would check {len(orders)} eToro order(s): "
               + ", ".join(str(o["order_id"]) for o in orders))
+        for o in orders:
+            print(f"DRYRUN ORDER cancel/close {o.get('symbol')} "
+                  f"{o.get('side', '')} {o.get('order_id')}")
         return
 
     client = EtoroClient()
@@ -168,7 +240,9 @@ def run_etoro(dry, profile=None):
     hook = load_webhook()
     if not hook:
         return
-    seg = f"GOLD.24-7 · eToro {os.environ.get('ETORO_MODE', 'demo')} · risk {risk_amount:,.0f} USD/trade"
+    now = pd.Timestamp.now(tz="UTC")
+    seg = (f"GOLD.24-7 · eToro {os.environ.get('ETORO_MODE', 'demo')} · "
+           f"risk {risk_amount:,.0f} USD/trade · {describe_schedule(now)}")
     if trades:
         win = total_pnl > 0
         title = f"SESSION RESULT — {'WIN' if win else 'LOSS'}  {total_pnl:+,.2f} USD  ({total_r:+.2f}R)"
@@ -198,6 +272,7 @@ def run_ig(dry):
 
     if dry:
         print("DRY RUN — would cancel unfilled working orders and close open positions on", epic)
+        print(f"DRYRUN ORDER cancel/close {epic}")
         return
 
     from ig_client import IGClient

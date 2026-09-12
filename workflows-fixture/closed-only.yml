@@ -1,0 +1,17 @@
+name: closed-only
+# Every fire time here is inside the weekend, so the harness must report that
+# each command declined rather than acting - a run that "passes" without ever
+# declining would be a vacuous pass.
+on:
+  schedule:
+    - cron: '5 8 * * 6'    # Saturdays 08:05 UTC
+jobs:
+  end:
+    runs-on: ubuntu-latest
+    steps:
+      - name: End session and report P&L
+        env:
+          BROKER: etoro
+        run: python end_session.py --broker etoro --profile tokyo
+      - name: Monitor
+        run: python reclaim_monitor.py --force
