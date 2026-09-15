@@ -3,7 +3,9 @@ name: discord-daily-signal
 on:
   schedule:
     - cron: '10 22 * * *'  # 22:10 UTC - armed (NY-late levels + triggers)
-    - cron: '10 8 * * *'   # 08:10 UTC - triggered/closed result
+    - cron: '*/15 23,0-8 * * *'  # every 15m during Asia session - catches entry within 15m
+    - cron: '10 8 * * *'   # 08:10 UTC - final result (kept for backward compat)
+    - cron: '10 9 * * *'   # 09:10 UTC - catch late exit at 08:00 bar
   workflow_dispatch:
     inputs:
       test:
@@ -13,7 +15,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   notify:
@@ -25,12 +27,21 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Send Discord daily signal
+      - name: Send Discord signals (trigger + daily)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           if [ "${{ inputs.test }}" = "true" ]; then
             python notify.py --test
           else
-            python notify.py
+            python notify.py --trigger || true
+            python notify.py || true
           fi
+      - name: Persist notify state (dedup for 15m polling)
+        if: always()
+        run: |
+          git config user.name "asiagrab-bot"
+          git config user.email "bot@asiagrab"
+          git add results/notify_state.json || echo "no state"
+          git commit -m "notify state $(date -u +%F_%H%M)" || echo "nothing to commit"
+          git push || echo "push failed"
