@@ -700,10 +700,14 @@ def main():
     print(f"Signal sent, HTTP {status} - {key}")
 
     if not args.no_state:
+        # NB: extra field is `window`, NOT `session` - remember() does
+        # state[name]=value then state.update(extra), so an extra named
+        # `session` would clobber the dedup key just stored and every run
+        # would re-send (this caused the repeated ARMED/NO SESSION spam).
         remember("session", key, args.state_path,
                  posted_at=state["now"].isoformat(),
-                 session=(state["window"][0].isoformat()
-                          if state["window"] is not None else None))
+                 window=(state["window"][0].isoformat()
+                         if state["window"] is not None else None))
 
 
 if __name__ == "__main__":
